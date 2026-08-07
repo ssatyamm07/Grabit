@@ -1,0 +1,20 @@
+{
+  "name": "grabit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Grabit — local commerce operating system",
+  "scripts": {
+    "dev:api": "npm run dev --prefix backend",
+    "dev:app": "npm run start --prefix expo-app",
+    "dev": "npm run dev:api",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "migrate": "npm run migrate --prefix backend",
+    "seed": "npm run seed --prefix backend",
+    "typecheck:app": "npm run typecheck --prefix expo-app"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

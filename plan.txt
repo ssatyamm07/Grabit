@@ -1,0 +1,579 @@
+# Grabit — Local Commerce Platform
+Engineering & Product Architecture Blueprint
+
+Single source of truth for the next 12–18 months: problem, domains, architecture, data principles, infra strategy, and build order.
+
+**Stack reference:** same delivery shape as Slade Blade / Saras (`backend/` + `expo-app/` + optional Vite admin, Express + Postgres + Expo Router, JWT/OTP, migrations, RBAC) — redesigned for Grabit’s hyperlocal commerce OS, not a single-vendor construction marketplace.
+
+**Source docs:**
+- Product vision: https://docs.google.com/document/d/1zyfoG2gnBGTp2uJMIVwK7-hyazYLFc6g9L6mFIDBLMY/edit
+- This file: locked engineering decisions + sequencing
+
+---
+
+## Table of Contents
+
+1. Problem & Vision
+2. Design Principles (Locked)
+3. What We Reuse From Slade Blade
+4. What We Change For Grabit
+5. Tech Stack
+6. Project Structure
+7. Domains & Actors
+8. Core Architecture
+9. Offline Contract
+10. Database Schema (Spine)
+11. API Surface (MVP)
+12. User Roles & Access
+13. Reliability, Security & Observability
+14. Infrastructure Scaling Path
+15. Analytics & Pilot Metrics
+16. Risks & AI Sequencing
+17. Build Order & Team Shape
+18. Bottom Line
+
+---
+
+## 1. Problem & Vision
+
+Build India’s operating system for **local commerce and local services**.
+
+Unlike Blinkit / Instamart, Grabit does **not** own inventory. The platform connects:
+
+```
+Customer  ↔  Vendor  ↔  Delivery Partner
+```
+
+We provide: digital storefront, online ordering, local delivery, service booking, discovery, payments, analytics.
+
+**Pilot focus (one town):** grocery + stationery + local services — prove the order loop before multi-city.
+
+**Target before rewrite:** 100k+ users, thousands of vendors, tens of thousands of daily orders — via modular monolith, not premature microservices.
+
+---
+
+## 2. Design Principles (Locked)
+
+| # | Principle | Meaning |
+|---|-----------|---------|
+| 1 | Asset-light | Never own inventory. Connect only. |
+| 2 | Mobile-first | Vendor never needs a laptop. |
+| 3 | Offline-friendly | Aggressive cache, retry queues, image compression, optimistic UI. |
+| 4 | Low-cost infra | VPS + Docker + Postgres + Redis + Cloudflare over expensive managed stacks (until Stage 2). |
+| 5 | Modular | Domains own APIs, tables, rules, events. Removable modules. |
+| 6 | Idempotent by default | Every mutating API takes an idempotency key. Queue consumers are safe to run twice. |
+| 7 | Explicit consistency | Strong for money/stock/orders; eventual for notify/search/analytics. |
+
+When someone proposes owning inventory or spinning microservices at MVP — point here.
+
+### Consistency boundaries
+
+**Strong (single DB transaction):** order placement, payment settle, ledger entries, stock reserve/commit/release.
+
+**Eventual (via outbox → workers):** push notifications, analytics, search index, rewards, recommendations.
+
+---
+
+## 3. What We Reuse From Slade Blade
+
+Concrete patterns that already shipped and should transfer:
+
+| Area | Slade Blade pattern | Grabit reuse |
+|------|---------------------|--------------|
+| Repo shape | `backend/` + `expo-app/` + `docs/` (+ optional Vite admin) | Same monorepo layout |
+| API | Express ESM, `routes/` → `controllers/` → `utils/` | Same, plus domain folders |
+| Auth | JWT + MSG91 OTP, phone-first | Same; expand roles |
+| DB | Postgres + `init-db` + versioned migrations | Same; add PostGIS from day 1 |
+| Mobile | Expo Router, Zustand, React Query, i18n EN/HI | Same |
+| Media | MinIO / R2 uploads | Same |
+| Payments | Gateway create + verify + webhook | Same flow; add COD + ledger |
+| Addresses | Structured snapshot on order (flat, landmark, lat/lng) | Same; add serviceability radius |
+| Ops | Rate limit, CORS allowlist, optional Sentry, health check | Same |
+| Admin | In-app settings + info pages CMS | Same idea; city-scoped later |
+| Push | Device token register + Expo push on status change | Same |
+| Docs style | SETUP / LOCAL_SETUP / LAUNCH / TESTING | Same doc set |
+
+---
+
+## 4. What We Change For Grabit
+
+Slade Blade is closer to **one catalog / one fulfillment model**. Grabit is a **multi-vendor hyperlocal OS**.
+
+| Slade Blade today | Grabit |
+|-------------------|--------|
+| Admin-owned products | Master Product → Vendor Listing → Vendor Inventory |
+| Single stock column on product | Per-vendor inventory + reservation |
+| Customer / Vendor / Admin | + Delivery Partner, Regional Admin, Support, Field Agent |
+| Products OR services as separate flows | One order pipeline, vendor-type config (product vs service, prep time, appointment) |
+| Status updates on order row | Order state machine + immutable `order_events` |
+| Mutable payment status | Double-entry ledger (paise integers); balance = SUM(ledger) |
+| Direct controller side-effects | Transactional outbox → BullMQ / Redis Streams |
+| Soft geo (lat/lng on address) | PostGIS everywhere + coverage radius/polygon |
+| Neon-first | Stage 1 single VPS Docker Compose; managed DB at Stage 2 |
+
+---
+
+## 5. Tech Stack
+
+### Mobile (`expo-app/`)
+- Expo + Expo Router
+- TypeScript
+- Zustand (UI / cart / auth)
+- TanStack React Query (server state + persistence for offline reads)
+- i18n (EN / HI)
+- Expo Location / Maps, Notifications, Secure Store
+- Image compression before upload
+
+### Backend (`backend/`)
+- Node.js + Express (ESM)
+- PostgreSQL + **PostGIS**
+- Redis + BullMQ (queues + delayed jobs + MVP event bus)
+- JWT + refresh tokens
+- MSG91 OTP
+- Payment gateway (Razorpay / PayPhi — same verify/webhook pattern as Slade)
+- MinIO or Cloudflare R2
+- Pino logs + optional Sentry
+- Prisma **or** versioned SQL migrations (pick one; never hand-edit prod)
+
+### Admin / Web (optional Stage 1)
+- Vite + React + TypeScript (Slade-style) for Super Admin / Regional Admin
+- Or Expo-first admin screens only for pilot
+
+### Stage 1 runtime
+```
+Docker Compose: API + Postgres/PostGIS + Redis + Nginx + workers
+Objects: R2 / MinIO
+CDN / DNS: Cloudflare
+```
+
+---
+
+## 6. Project Structure
+
+```
+grabit/
+├── README.md
+├── plan.txt                      # This blueprint
+├── docs/
+│   ├── SETUP.md
+│   ├── LOCAL_SETUP.md
+│   ├── LAUNCH_CONFIGURATION.md
+│   ├── TESTING.md
+│   └── deploy-guide.md
+├── backend/
+│   ├── package.json
+│   ├── .env.example
+│   ├── scripts/                  # migrate, seed, verify-db, restore-drill
+│   └── src/
+│       ├── server.js
+│       ├── config/
+│       ├── middleware/           # auth, rbac, rateLimit, idempotency, monitoring
+│       ├── domains/              # modular monolith — one folder per domain
+│       │   ├── auth/
+│       │   ├── users/
+│       │   ├── vendors/
+│       │   ├── catalog/          # master products + categories
+│       │   ├── inventory/        # vendor listings + stock reservation
+│       │   ├── orders/           # state machine + order_events
+│       │   ├── payments/         # gateway + COD
+│       │   ├── ledger/           # immutable double-entry
+│       │   ├── delivery/
+│       │   ├── services/         # bookings (parameterized fulfillment)
+│       │   ├── geo/
+│       │   ├── search/
+│       │   ├── notifications/
+│       │   ├── reviews/
+│       │   ├── analytics/
+│       │   ├── support/
+│       │   └── admin/
+│       ├── events/               # outbox writer + relay worker + schema versions
+│       ├── workers/              # BullMQ consumers (notify, expire orders, etc.)
+│       ├── migrations/
+│       └── utils/
+├── expo-app/                     # Customer + Vendor + Rider apps (role-gated)
+│   ├── app/
+│   │   ├── (auth)/
+│   │   ├── (customer)/
+│   │   ├── (vendor)/
+│   │   ├── (delivery)/
+│   │   └── (admin)/              # support / regional / field as needed
+│   ├── src/
+│   │   ├── api/
+│   │   ├── store/
+│   │   ├── query/
+│   │   ├── i18n/
+│   │   ├── offline/              # mutation queue + idempotency keys
+│   │   └── notifications/
+│   └── eas.json
+└── admin-web/                    # optional Vite admin (Slade `src/` equivalent)
+```
+
+**Rule:** a domain never reaches into another domain’s tables. Call a service interface or publish an event.
+
+---
+
+## 7. Domains & Actors
+
+### Domains
+Auth · Users · Vendor · Catalog · Inventory · Orders · Payments · Ledger · Delivery · Services · Notifications · Search · Reviews · Analytics · Support · Admin · Settings · Geo
+
+Each owns: APIs, tables, business rules, events.
+
+### Actors (one RBAC model from day one)
+
+| Actor | Job |
+|-------|-----|
+| Customer | Buy products, book services, track orders |
+| Vendor | Catalog listings, orders, inventory |
+| Delivery Partner | Pickup, delivery, OTP verify |
+| Regional Admin | One city: approve vendors, disputes |
+| Super Admin | Entire platform |
+| Support Executive | Refunds, cancellations, disputes |
+| Field Agent | Vendor onboarding, catalog assist, store verification |
+
+Scope Regional Admin + Field Agent by `city_id` / `region_id` from day one. Adding a role later = data change, not rewrite.
+
+### Vendor-type polymorphism (don’t fork 14 flows)
+
+Shared 80%: listing, order, payment, ledger.
+
+Configurable per vendor type:
+- fulfillment: `instant` | `prep_time` | `appointment`
+- catalog kind: `product` | `service`
+- delivery-time defaults
+
+One order pipeline, parameterized.
+
+---
+
+## 8. Core Architecture
+
+### 8.1 Master catalog (highest leverage)
+
+```
+Master Product  →  Vendor Listing  →  Vendor Inventory
+(Amul Gold 500ml, barcode, brand, images)
+                     ↓
+            Vendor A ₹33 In Stock
+            Vendor B ₹34 Out of Stock
+```
+
+- Seed master catalog from public FMCG/barcode datasets before launch.
+- Vendor search-and-add (not type-from-scratch).
+- Vendor-proposed products → Field Agent / admin promotes to master.
+- Barcode scan on vendor app → master product (fastest onboarding).
+
+### 8.2 Geo from day one
+
+Every entity location-aware: Customer, Vendor, Delivery Partner, Service Provider, Store, Pickup Point.
+
+Store: `geography(Point)` **and** `pincode` (cheap serviceability cache key).
+
+Vendor coverage: radius or polygon. Answer “can deliver to this address?” at **cart** time.
+
+Enable **PostGIS** in Stage 1 Compose — not later.
+
+### 8.3 Event-driven + transactional outbox
+
+```
+Order Created (DB tx + outbox row)
+        ↓ relay worker
+Inventory Reserved → Vendor Notify → Push → Analytics → Rewards → …
+```
+
+- MVP bus = Redis Streams or BullMQ (already on Redis). Kafka only Stage 3+.
+- Version event schemas from event #1.
+- Assume **at-least-once**; consumers idempotent.
+
+### 8.4 Order lifecycle + inventory reservation
+
+```
+Draft → Placed → Accepted → Preparing → Ready → Picked → Delivered
+Failure: Cancelled | Rejected | Expired | Refunded | Returned
+```
+
+| Transition | Stock |
+|------------|-------|
+| PLACED | Reserve |
+| ACCEPTED | Commit |
+| REJECTED / EXPIRED / CANCELLED | Release |
+
+- Illegal transitions rejected in code (state machine).
+- Every transition → `order_events` immutable log. Never edit history.
+- Auto-EXPIRE via delayed BullMQ if vendor doesn’t accept in N minutes → notify customer + release stock.
+
+### 8.5 Money as ledger
+
+Never store mutable `wallet_balance`.
+
+```
+ledger_entries: credit | debit | reason | reference | timestamp | amount_paise
+```
+
+- Amounts = **integer paise** (never floats).
+- Balance = SUM(entries), derived.
+- COD: model cash-collection leg so commission nets against cash held by vendor/rider.
+
+---
+
+## 9. Offline Contract
+
+Small-town networks will retry everything.
+
+| Concern | Rule |
+|---------|------|
+| Reads | Cache catalog + last order state (React Query persistence). Show stale-with-timestamp, not infinite spinner. |
+| Writes | Queue locally with idempotency key; replay on reconnect. |
+| Conflicts | Server is source of truth. Invalid queued action fails loudly (sold out) — never silent. |
+| Images | Compress client-side before upload. |
+
+This is why §2 idempotency is non-negotiable.
+
+---
+
+## 10. Database Schema (Spine)
+
+Core tables to land first (names illustrative):
+
+| Table | Purpose |
+|-------|---------|
+| `users` | All actors; role + city scope |
+| `roles` / `permissions` / `role_permissions` | RBAC |
+| `cities` / `regions` | Geo hierarchy |
+| `vendors` | Business profile, type, coverage geometry |
+| `master_products` | Canonical SKU / barcode / brand |
+| `vendor_listings` | Vendor price + availability pointer to master |
+| `vendor_inventory` | Qty, reserved_qty |
+| `addresses` | Structured + PostGIS point + pincode |
+| `orders` | Current state + delivery snapshot |
+| `order_items` | Line items (listing snapshots) |
+| `order_events` | Immutable transition log |
+| `payments` | Gateway / COD legs |
+| `ledger_entries` | Double-entry money |
+| `outbox` | Transactional events pending relay |
+| `idempotency_keys` | Mutating API dedupe |
+| `devices` | Push tokens |
+| `app_settings` | Delivery fees, support contacts |
+| `info_pages` | CMS policies |
+
+Partition later (not Stage 1): `orders`, `order_events`, `notifications`, `audit_logs` by month.
+
+---
+
+## 11. API Surface (MVP)
+
+Same URL style as Slade (`/api/...`), expanded for domains.
+
+### Auth
+```
+POST /api/auth/send-otp
+POST /api/auth/verify-otp
+POST /api/auth/refresh
+POST /api/auth/logout
+```
+
+### Catalog & inventory
+```
+GET  /api/catalog/master/search?q=
+GET  /api/catalog/master/:id
+POST /api/vendors/me/listings          # add from master
+PATCH /api/vendors/me/listings/:id
+PATCH /api/vendors/me/inventory/:id
+```
+
+### Geo & addresses
+```
+GET/POST/PUT/DELETE /api/addresses
+GET  /api/geo/serviceable?lat=&lng=    # vendors that can deliver
+GET  /api/addresses/geocode/search
+GET  /api/addresses/geocode/reverse
+```
+
+### Orders (idempotency-key header required on POST/state changes)
+```
+POST /api/orders
+GET  /api/orders/me
+POST /api/orders/:id/accept            # vendor
+POST /api/orders/:id/reject
+POST /api/orders/:id/status            # state machine guarded
+GET  /api/orders/:id/events
+```
+
+### Payments & ledger
+```
+POST /api/payment/create
+POST /api/payment/verify
+POST /api/payment/webhook
+GET  /api/ledger/me                    # derived balance + entries
+```
+
+### Delivery
+```
+GET  /api/delivery/jobs
+POST /api/delivery/jobs/:id/pickup
+POST /api/delivery/jobs/:id/complete   # OTP verify
+```
+
+### Devices / settings / CMS
+```
+POST /api/devices/register
+GET  /api/app-settings
+GET/PUT /api/info-pages/:slug
+```
+
+### Health
+```
+GET /api/health
+```
+
+---
+
+## 12. User Roles & Access
+
+### Middleware (Slade-style, expanded)
+```
+requireAuth()
+requireRole('customer' | 'vendor' | 'delivery' | 'regional_admin' | 'super_admin' | 'support' | 'field_agent')
+requireCityScope()   # regional / field
+```
+
+### Access matrix (MVP)
+
+| Feature | Customer | Vendor | Delivery | Support | Regional | Super |
+|---------|----------|--------|----------|---------|----------|-------|
+| Browse / cart / order | ✅ | ❌ | ❌ | read | read | ✅ |
+| Manage listings / stock | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Accept / reject orders | ❌ | ✅ | ❌ | assist | ✅ | ✅ |
+| Delivery jobs | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| Refunds / disputes | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Approve vendors | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Master catalog admin | ❌ | propose | ❌ | ❌ | ✅ | ✅ |
+| Platform settings | ❌ | ❌ | ❌ | ❌ | limited | ✅ |
+
+PII: Support/Admin full phone/address access is logged; default to masked views.
+
+---
+
+## 13. Reliability, Security & Observability
+
+### Security (before first production)
+- JWT rotation + refresh tokens
+- Rate limiting + OTP abuse caps (alert on MSG91 spend)
+- Helmet, CORS allowlist, input validation
+- SQL injection prevention / parameterized queries
+- Audit logs + device login history + session management
+- Idempotency on all money/stock mutations
+
+### Observability
+- Every log line: `request_id`, `user_id`, `vendor_id`, `order_id`, latency, status
+- Pino + Sentry + Uptime Kuma
+- Business alerts: acceptance rate drop, payment failure spike, queue backlog
+
+### Backups (Stage 1 = one disk = existential risk)
+- Nightly `pg_dump` → R2
+- PITR when managed Postgres arrives
+- **Tested restore before launch** — untested backup is not a backup
+
+### CI/CD
+```
+Lint → Typecheck → Tests → Build → Docker image → Deploy → Health check
+```
+No manual deploys. Migrations backward-compatible for rollback.
+
+---
+
+## 14. Infrastructure Scaling Path
+
+| Stage | Scale | Move |
+|-------|-------|------|
+| 1 | 1 town, &lt;1k orders/day | Single VPS, Docker Compose: Express + PostGIS + Redis + BullMQ + Nginx + R2. Vertical scale first. Keep domain + outbox clean. |
+| 2 | Multi-town, ~10k orders/day | Managed Postgres (+ replica) + managed Redis first. Then 2+ stateless API instances + separate workers. Socket Redis adapter if realtime. |
+| 3 | Regional, ~50k orders/day | Extract only Search, Notifications, Analytics. Typesense/Meilisearch. Real bus if Redis strains. Partition hot tables. |
+| 4+ | Multi-city, 100k+ users | Org scaling. City feature flags. Resist K8s/service mesh until forced. |
+
+**Search:** Postgres FTS + `pg_trgm` at MVP. Never start with Elasticsearch.
+
+---
+
+## 15. Analytics & Pilot Metrics
+
+Feed analytics from the **event stream**, not live production queries.
+
+### Four that predict pilot survival
+1. **Repeat rate** (week-2 / week-4 reorder %)
+2. **Vendor acceptance rate + time-to-accept**
+3. **Fill rate** (ordered vs delivered)
+4. **Contribution margin per order** after delivery cost
+
+Also track: basket size, conversion, search success, cancellation rate, GMV, commission, active vendors/users, avg delivery time.
+
+---
+
+## 16. Risks & AI Sequencing
+
+| Risk | Mitigation |
+|------|------------|
+| Vendors don’t upload products | **#1 risk** — field ops + master catalog + barcode add |
+| Customers don’t return | Fast fulfillment + loyalty + support |
+| Low delivery density | Vendor self-delivery initially |
+| High infra cost | Single VPS + modular monolith |
+| Inventory mismatch | Reservation + simple stock sync |
+| Payment disputes | Immutable ledger + audit logs |
+| Poor search | Synonyms + fuzzy (`pg_trgm`) |
+| Slow vendors | Auto-timeouts + ratings |
+| Data loss | Nightly backups + restore drills |
+| Scaling too early | Vertical scale before microservices |
+
+### AI — only after operational excellence
+Voice grocery assistant · cart suggestions · vendor restock prompts · competitive pricing.
+
+Event-driven clean data is the substrate; do not build AI into MVP.
+
+---
+
+## 17. Build Order & Team Shape
+
+### Build sequence (spine before surface)
+
+1. **Foundation:** auth + RBAC, geo/PostGIS, master catalog, outbox/events
+2. **Core loop:** vendor listing → customer order → state machine + stock reservation → ledger → COD/online pay — one full order end-to-end early
+3. **Then:** search, notifications, reviews, admin/support tooling, delivery partner app
+4. **Parallel from week one:** field ops recruiting real shopkeepers (slower than engineering)
+
+### Lean MVP team
+- 2 backend
+- 2 mobile (RN/Expo)
+- 1 shared frontend/admin
+- **1 field ops lead** (measured on active vendors + fill rate) — the role technical founders forget
+
+---
+
+## 18. Bottom Line
+
+Grabit ships with **Slade Blade’s proven delivery chassis** (Express/Postgres/Expo monorepo, OTP, payments, structured addresses, migrations, RBAC, ops docs) and **Grabit’s commerce OS brain** (master catalog, multi-actor RBAC, PostGIS, order state machine, inventory reservation, ledger, outbox, offline contract).
+
+Lock the principles. Build the spine first. Treat vendor supply as the hardest problem. Scale infra only when metrics demand it.
+
+Executed this way, the architecture supports one town → multi-city at 100k+ users without a forced rewrite.
+
+---
+
+## Brand (locked for UI)
+
+| Role | Hex | Use |
+|------|-----|-----|
+| Blue | `#1B6CA8` | Primary / trust |
+| Yellow | `#F5C518` | CTAs |
+| Green | `#2E8B57` | Success / local |
+
+Tokens live in `expo-app/src/theme/colors.ts`.
+
+---
+
+## Scaffold status (done)
+
+1. `backend/` Express + PostGIS Docker Compose + migration `001_foundation`
+2. `expo-app/` Expo Router shells — login, customer home, vendor desk
+3. `docs/SETUP.md` + root `README.md`
+
+**Next build slice:** vendor listing → place order (idempotency) → state machine + stock reservation → ledger.
