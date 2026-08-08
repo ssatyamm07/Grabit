@@ -182,15 +182,32 @@ Or with PM2 from `backend/`:
 
 ```bash
 npm i -g pm2
-pm2 start ecosystem.config.cjs
+docker compose up -d redis   # required for BullMQ; workers fall back to poll if down
+pm2 start ecosystem.config.cjs   # grabit-api + grabit-workers
 pm2 status
 ```
 
 ```bash
-npm run smoke:razorpay                 # offline signature checks
-RAZORPAY_SMOKE_LIVE=1 npm run smoke:razorpay   # live Orders API (needs keys)
-npm run backup                         # pg_dump → backups/
-npm run restore:drill                  # restore into throwaway DB then drop
+npm run workers                  # BullMQ when Redis up, else poll outbox+expire
+npm run smoke:razorpay
+npm run backup && npm run restore:drill
+```
+
+### P2 — search / reviews / analytics
+
+```bash
+# Unified search (products + vendors + services)
+curl 'http://localhost:3001/api/search?q=Amul&lat=19.076&lng=72.8777'
+
+# Review a delivered order
+curl -X POST http://localhost:3001/api/reviews \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"order_id":1,"rating":5,"body":"Great"}'
+
+curl http://localhost:3001/api/reviews/vendor/1
+
+# Pilot metrics (staff)
+curl http://localhost:3001/api/analytics/pilot -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 Optional: `npm i @sentry/node` and set `SENTRY_DSN`.

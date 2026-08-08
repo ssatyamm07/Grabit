@@ -7,6 +7,7 @@ import { migration004 } from './004_payments_tracking.js';
 import { migration005 } from './005_disputes_services_outbox.js';
 import { migration006 } from './006_fix_photo_urls.js';
 import { migration007 } from './007_p1_audit_booking_payments.js';
+import { migration008 } from './008_reviews_search_analytics.js';
 
 const migrations = [
 	migration001,
@@ -16,6 +17,7 @@ const migrations = [
 	migration005,
 	migration006,
 	migration007,
+	migration008,
 ];
 
 export async function runMigrations() {

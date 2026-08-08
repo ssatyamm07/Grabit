@@ -1,5 +1,5 @@
 /**
- * PM2 process file — API + outbox consumer + order expire worker.
+ * PM2 — API + unified workers (BullMQ when Redis up, else poll).
  * Usage: pm2 start ecosystem.config.cjs
  */
 module.exports = {
@@ -13,17 +13,8 @@ module.exports = {
 			max_memory_restart: '512M',
 		},
 		{
-			name: 'grabit-outbox',
-			script: 'scripts/outbox-relay.js',
-			args: '--watch',
-			instances: 1,
-			env: { NODE_ENV: 'production' },
-			max_memory_restart: '256M',
-		},
-		{
-			name: 'grabit-expire',
-			script: 'scripts/order-expire.js',
-			args: '--watch',
+			name: 'grabit-workers',
+			script: 'scripts/workers.js',
 			instances: 1,
 			env: { NODE_ENV: 'production' },
 			max_memory_restart: '256M',

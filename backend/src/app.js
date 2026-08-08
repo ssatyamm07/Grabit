@@ -24,6 +24,10 @@ import paymentRoutes from './domains/payment/payment.routes.js';
 import disputesRoutes from './domains/disputes/disputes.routes.js';
 import verificationRoutes from './domains/verification/verification.routes.js';
 import servicesRoutes from './domains/services/services.routes.js';
+import reviewsRoutes from './domains/reviews/reviews.routes.js';
+import searchRoutes from './domains/search/search.routes.js';
+import analyticsRoutes from './domains/analytics/analytics.routes.js';
+import { pingRedis } from './config/redis.js';
 
 dotenv.config();
 
@@ -98,6 +102,8 @@ export function createApp() {
 			body.checks.outbox_backlog = { ok: false, error: String(err.message || err) };
 		}
 
+		body.checks.redis = await pingRedis();
+
 		body.latency_ms = Date.now() - started;
 		const code = body.status === 'OK' ? 200 : 503;
 		return res.status(code).json(body);
@@ -118,6 +124,9 @@ export function createApp() {
 	app.use('/api/disputes', disputesRoutes);
 	app.use('/api/verification', verificationRoutes);
 	app.use('/api/services', servicesRoutes);
+	app.use('/api/reviews', reviewsRoutes);
+	app.use('/api/search', searchRoutes);
+	app.use('/api/analytics', analyticsRoutes);
 	app.use('/api', settingsRoutes);
 
 	app.use((err, req, res, _next) => {

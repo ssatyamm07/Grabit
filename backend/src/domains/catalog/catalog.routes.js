@@ -9,12 +9,17 @@ router.get('/master/search', async (req, res) => {
 		if (!q) return res.json({ products: [] });
 
 		const result = await pool.query(
-			`SELECT id, name, brand, barcode, category, unit_label, images
+			`SELECT id, name, brand, barcode, category, unit_label, images,
+			        similarity(name, $1) AS score
 			 FROM master_products
-			 WHERE name ILIKE '%' || $1 || '%'
+			 WHERE name % $1
 			    OR brand ILIKE '%' || $1 || '%'
 			    OR barcode = $1
-			 ORDER BY name ASC
+			    OR name ILIKE '%' || $1 || '%'
+			 ORDER BY
+			   CASE WHEN barcode = $1 THEN 0 ELSE 1 END,
+			   similarity(name, $1) DESC NULLS LAST,
+			   name ASC
 			 LIMIT 40`,
 			[q]
 		);

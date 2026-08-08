@@ -10,6 +10,9 @@ export async function resetDb() {
 	await runMigrations();
 	await pool.query(`
 		TRUNCATE
+			analytics_daily,
+			analytics_events,
+			reviews,
 			audit_logs,
 			notification_log,
 			disputes,

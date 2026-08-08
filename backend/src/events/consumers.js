@@ -1,4 +1,5 @@
 import { pushToUser, smsToUser } from '../services/notifications.js';
+import { recordAnalyticsEvent } from '../services/analytics.js';
 
 const SMS_EVENTS = new Set([
 	'order.placed',
@@ -138,6 +139,8 @@ export async function resolveRecipients(client, { event_type: eventType, payload
  * Deliver push (+ optional SMS) for one outbox row. Throws on hard failure.
  */
 export async function consumeOutboxEvent(client, row) {
+	await recordAnalyticsEvent(client, row);
+
 	const { recipients, title, body, data } = await resolveRecipients(client, row);
 	if (recipients.length === 0) {
 		await pushToUser(client, {
