@@ -31,7 +31,7 @@ export default function CustomerHome() {
 	const add = useCartStore((s) => s.add);
 	const toast = useToastStore((s) => s.show);
 
-	const vendorsQ = useQuery({ queryKey: ['vendors'], queryFn: listVendors });
+	const vendorsQ = useQuery({ queryKey: ['vendors'], queryFn: () => listVendors() });
 	const storeQ = useQuery({
 		queryKey: ['storefront', vendorId],
 		queryFn: () => getStorefront(vendorId!),

@@ -34,6 +34,7 @@ export default function RootLayout() {
 						<Stack.Screen name="(auth)/login" />
 						<Stack.Screen name="(customer)" />
 						<Stack.Screen name="(vendor)/home" />
+						<Stack.Screen name="(admin)" />
 					</Stack>
 				</QueryClientProvider>
 			</SafeAreaProvider>

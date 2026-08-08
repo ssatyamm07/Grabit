@@ -19,5 +19,8 @@ export default function Index() {
 
 	if (!token) return <Redirect href="/(auth)/login" />;
 	if (role === 'vendor') return <Redirect href="/(vendor)/home" />;
+	if (role && ['super_admin', 'regional_admin', 'support', 'field_agent'].includes(role)) {
+		return <Redirect href={'/(admin)/home' as never} />;
+	}
 	return <Redirect href="/(customer)/(tabs)" />;
 }

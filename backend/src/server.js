@@ -1,9 +1,11 @@
 import dotenv from 'dotenv';
+import http from 'http';
 import { logger } from './config/logger.js';
 import { initSentry, captureException } from './config/sentry.js';
 import { runMigrations } from './migrations/index.js';
 import { createApp } from './app.js';
 import storage from './services/storage.js';
+import { attachRealtime } from './realtime/socket.js';
 
 dotenv.config();
 
@@ -23,6 +25,9 @@ await runMigrations();
 await storage.init();
 
 const app = createApp();
+const server = http.createServer(app);
+attachRealtime(server);
+
 const PORT = Number(process.env.PORT || 3001);
 
 process.on('uncaughtException', (err) => {
@@ -34,6 +39,6 @@ process.on('unhandledRejection', (err) => {
 	logger.error({ err }, 'unhandledRejection');
 });
 
-app.listen(PORT, () => {
-	logger.info(`Grabit API listening on http://localhost:${PORT}`);
+server.listen(PORT, () => {
+	logger.info(`Grabit API + realtime listening on http://localhost:${PORT}`);
 });

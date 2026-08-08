@@ -3,6 +3,7 @@ import { enqueueOutbox } from '../../events/outbox.js';
 import { canTransition } from '../orders/order.state.js';
 import { loadOrder } from '../orders/place-order.service.js';
 import { hashOtp } from '../orders/fulfillment.js';
+import { emitOrderUpdate } from '../../realtime/socket.js';
 
 async function getPartnerByUserId(userId, client = pool) {
 	const result = await client.query(
@@ -57,6 +58,22 @@ export async function patchLocation(req, res) {
 			);
 		}
 		const updated = await getPartnerByUserId(req.user.id);
+		if (updated?.id) {
+			const active = await pool.query(
+				`SELECT j.order_id
+				 FROM delivery_jobs j
+				 WHERE j.partner_id = $1 AND j.status IN ('assigned', 'picked_up')`,
+				[updated.id]
+			);
+			for (const row of active.rows) {
+				emitOrderUpdate(row.order_id, {
+					type: 'rider_location',
+					lat,
+					lng,
+					partner_id: updated.id,
+				});
+			}
+		}
 		return res.json({ partner: updated });
 	} catch (err) {
 		console.error('delivery.patchLocation', err);
@@ -218,6 +235,7 @@ export async function pickupJob(req, res) {
 
 		await client.query('COMMIT');
 		const full = await loadOrder(order.id);
+		emitOrderUpdate(order.id, { status: 'picked', order: full, job: updated.rows[0] });
 		return res.json({ job: updated.rows[0], order: full });
 	} catch (err) {
 		await client.query('ROLLBACK');
@@ -304,6 +322,7 @@ export async function completeJob(req, res) {
 
 		await client.query('COMMIT');
 		const full = await loadOrder(order.id);
+		emitOrderUpdate(order.id, { status: 'delivered', order: full, job: updated.rows[0] });
 		return res.json({ job: updated.rows[0], order: full });
 	} catch (err) {
 		await client.query('ROLLBACK');

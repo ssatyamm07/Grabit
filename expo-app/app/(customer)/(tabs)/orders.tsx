@@ -1,4 +1,5 @@
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,6 +23,7 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function OrdersScreen() {
 	const insets = useSafeAreaInsets();
+	const router = useRouter();
 	const ordersQ = useQuery({ queryKey: ['my-orders'], queryFn: listMyOrders });
 
 	return (
@@ -46,7 +48,10 @@ export default function OrdersScreen() {
 					/>
 				}
 				renderItem={({ item }) => (
-					<View style={styles.card}>
+					<Pressable
+						style={styles.card}
+						onPress={() => router.push(`/(customer)/order/${item.id}` as never)}
+					>
 						<View style={styles.row}>
 							<Text style={styles.id}>#{item.id}</Text>
 							<View
@@ -62,7 +67,8 @@ export default function OrdersScreen() {
 						</View>
 						<Text style={styles.store}>{item.business_name || 'Store order'}</Text>
 						<Text style={styles.total}>{formatPaise(item.total_paise)}</Text>
-					</View>
+						<Text style={styles.trackHint}>Tap to track live →</Text>
+					</Pressable>
 				)}
 			/>
 		</View>
@@ -79,4 +85,5 @@ const styles = StyleSheet.create({
 	pillText: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
 	store: { marginTop: 8, color: brand.textMuted },
 	total: { marginTop: 4, fontWeight: '800', color: brand.primary, fontSize: 16 },
+	trackHint: { marginTop: 8, fontSize: 12, fontWeight: '600', color: brand.primary },
 });

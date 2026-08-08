@@ -23,7 +23,7 @@ router.get('/master/search', async (req, res) => {
 			 LIMIT 40`,
 			[q]
 		);
-		return res.json({ products: result.rows });
+		return res.json({ products: result.rows, items: result.rows });
 	} catch (err) {
 		console.error('catalog search', err);
 		return res.status(500).json({ error: 'Search failed' });

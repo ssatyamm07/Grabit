@@ -25,6 +25,15 @@ export default function CustomerTabsLayout() {
 				}}
 			/>
 			<Tabs.Screen
+				name="services"
+				options={{
+					title: 'Services',
+					tabBarIcon: ({ color, size }) => (
+						<Ionicons name="construct-outline" size={size} color={color} />
+					),
+				}}
+			/>
+			<Tabs.Screen
 				name="cart"
 				options={{
 					title: 'Cart',

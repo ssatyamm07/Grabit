@@ -51,6 +51,37 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: grabit-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgresql://grabit:grabit@postgres:5432/grabit
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: docker-compose-dev-secret-min-32-chars-xx
+      SHOW_OTP_IN_RESPONSE: "false"
+      OTP_DRY_RUN: "true"
+      SMS_DRY_RUN: "true"
+      PUSH_DRY_RUN: "true"
+      CORS_ORIGINS: "*"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 40s
+
 volumes:
   grabit_pgdata:
   grabit_redis:

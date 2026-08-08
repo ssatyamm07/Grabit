@@ -94,6 +94,13 @@ describe('P2 reviews / search / analytics', () => {
 		assert.ok(vendors.body.vendors.length >= 1);
 	});
 
+	it('search expands synonyms (doodh → milk)', async () => {
+		const res = await request(app).get('/api/search?q=doodh');
+		assert.equal(res.status, 200);
+		assert.ok(Array.isArray(res.body.terms));
+		assert.ok(res.body.terms.map((t) => String(t).toLowerCase()).includes('milk'));
+	});
+
 	it('outbox drain writes analytics and pilot metrics work', async () => {
 		await drainOnce(pool);
 		const events = await pool.query(`SELECT COUNT(*)::int AS n FROM analytics_events`);

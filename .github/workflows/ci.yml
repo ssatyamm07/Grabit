@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: grabit
+          POSTGRES_PASSWORD: grabit
+          POSTGRES_DB: grabit
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U grabit -d grabit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Migrate + test
+        env:
+          DATABASE_URL: postgresql://grabit:grabit@localhost:5434/grabit
+          REDIS_URL: redis://localhost:6379
+          REDIS_DISABLED: 'true'
+          JWT_SECRET: ci-test-secret-at-least-32-characters-long
+          SHOW_OTP_IN_RESPONSE: 'true'
+          OTP_DRY_RUN: 'true'
+          SMS_DRY_RUN: 'true'
+          PUSH_DRY_RUN: 'true'
+          NODE_ENV: test
+        run: |
+          npm run migrate
+          npm test
+      - name: Docker build API image
+        run: docker build -t grabit-api:ci .
+
+  expo-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: expo-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: expo-app/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck

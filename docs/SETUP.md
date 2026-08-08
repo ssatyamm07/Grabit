@@ -432,8 +432,20 @@ npm start
 
 ## What’s next after setup
 
-1. Mobile UI for shopping lists + split checkout preview  
-2. MSG91 live SMS + Expo push production tokens  
-3. Delivery partner shell  
+P3 shipped locally:
+
+- Expo Services tab + order live tracking (Socket.IO)
+- Admin ops shell (`/(admin)/home`) for staff phones
+- Search synonyms (`migration 009`)
+- `backend/Dockerfile` + Compose `api` service + GitHub Actions CI
+
+```bash
+# Optional: run API in Docker (after infra is up)
+docker compose up -d --build api
+curl -fsS http://localhost:3001/api/health
+
+# Synonym search
+curl 'http://localhost:3001/api/search?q=doodh'
+```
 
 See root [`plan.txt`](../plan.txt) §17 Build Order.

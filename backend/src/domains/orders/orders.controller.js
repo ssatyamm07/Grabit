@@ -8,6 +8,7 @@ import {
 	generateDeliveryOtp,
 	hashOtp,
 } from './fulfillment.js';
+import { emitOrderUpdate, emitToUser } from '../../realtime/socket.js';
 
 /**
  * POST /orders
@@ -293,6 +294,14 @@ export async function transitionOrder(req, res) {
 
 		await client.query('COMMIT');
 		const full = await loadOrder(orderId);
+		emitOrderUpdate(orderId, { status: toStatus, order: full });
+		if (full?.customer_id) {
+			emitToUser(full.customer_id, 'order:update', {
+				order_id: orderId,
+				status: toStatus,
+				order: full,
+			});
+		}
 		const body = { order: full };
 		// Dev-friendly: return OTP to vendor when marking ready (also SHOW_OTP)
 		if (deliveryOtpPlain && (isVendor || isStaff || process.env.SHOW_OTP_IN_RESPONSE === 'true')) {
