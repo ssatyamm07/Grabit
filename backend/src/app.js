@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 
+import pool from './db.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import authRoutes from './domains/auth/auth.routes.js';
 import catalogRoutes from './domains/catalog/catalog.routes.js';
@@ -70,12 +71,36 @@ export function createApp() {
 		next();
 	});
 
-	app.get('/api/health', (_req, res) => {
-		res.json({
+	app.get('/api/health', async (_req, res) => {
+		const started = Date.now();
+		const body = {
 			status: 'OK',
 			service: 'grabit-api',
+			env: process.env.NODE_ENV || 'development',
 			brand: { primary: 'blue', accent: 'yellow', success: 'green' },
-		});
+			checks: {},
+		};
+
+		try {
+			await pool.query('SELECT 1 AS ok');
+			body.checks.database = { ok: true };
+		} catch (err) {
+			body.status = 'DEGRADED';
+			body.checks.database = { ok: false, error: String(err.message || err) };
+		}
+
+		try {
+			const unpublished = await pool.query(
+				`SELECT COUNT(*)::int AS n FROM outbox WHERE published_at IS NULL`
+			);
+			body.checks.outbox_backlog = { ok: true, unpublished: unpublished.rows[0].n };
+		} catch (err) {
+			body.checks.outbox_backlog = { ok: false, error: String(err.message || err) };
+		}
+
+		body.latency_ms = Date.now() - started;
+		const code = body.status === 'OK' ? 200 : 503;
+		return res.status(code).json(body);
 	});
 
 	app.use('/api/auth', authRoutes);

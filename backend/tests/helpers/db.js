@@ -1,13 +1,16 @@
 import dotenv from 'dotenv';
 import pool from '../../src/db.js';
 import { runMigrations } from '../../src/migrations/index.js';
+import { resetRateLimitBuckets } from '../../src/middleware/rateLimit.js';
 
 dotenv.config();
 
 export async function resetDb() {
+	resetRateLimitBuckets();
 	await runMigrations();
 	await pool.query(`
 		TRUNCATE
+			audit_logs,
 			notification_log,
 			disputes,
 			store_verifications,

@@ -149,7 +149,51 @@ npm run test:unit
 npm run test:integration   # needs Docker PostGIS up
 npm test
 npm run outbox:relay       # drain unpublished outbox events once
+npm run order:expire       # expire stale unaccepted orders once
+# production workers (separate processes):
+# npm run workers:outbox
+# npm run workers:expire
 ```
+
+### Production checklist (pilot)
+
+```bash
+# backend/.env for production-ish
+NODE_ENV=production
+JWT_SECRET=<≥32 random chars>
+SHOW_OTP_IN_RESPONSE=false
+OTP_DRY_RUN=false
+MSG91_AUTH_KEY=...
+MSG91_OTP_TEMPLATE_ID=...   # login OTP template (OTP variable)
+MSG91_TEMPLATE_ID=...       # transactional SMS template for outbox
+SMS_DRY_RUN=false
+PUSH_DRY_RUN=false
+EXPO_ACCESS_TOKEN=...
+RAZORPAY_KEY_ID=...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
+STORAGE_DRIVER=s3
+ORDER_ACCEPT_TTL_MINUTES=30
+```
+
+Run **API + outbox worker + expire worker** as three processes. Health: `GET /api/health` includes DB + outbox backlog.
+
+Or with PM2 from `backend/`:
+
+```bash
+npm i -g pm2
+pm2 start ecosystem.config.cjs
+pm2 status
+```
+
+```bash
+npm run smoke:razorpay                 # offline signature checks
+RAZORPAY_SMOKE_LIVE=1 npm run smoke:razorpay   # live Orders API (needs keys)
+npm run backup                         # pg_dump → backups/
+npm run restore:drill                  # restore into throwaway DB then drop
+```
+
+Optional: `npm i @sentry/node` and set `SENTRY_DSN`.
 
 ### Addresses, auth refresh, vendor apply, delivery, admin
 

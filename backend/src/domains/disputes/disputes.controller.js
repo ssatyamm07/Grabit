@@ -1,5 +1,7 @@
 import pool from '../../db.js';
 import { enqueueOutbox } from '../../events/outbox.js';
+import { processRefund } from '../../services/refund.js';
+import { writeAuditLog } from '../../services/audit.js';
 
 const STAFF = ['super_admin', 'support', 'regional_admin'];
 
@@ -42,6 +44,14 @@ export async function openDispute(req, res) {
 					opened_by: req.user.id,
 					reason,
 				},
+			});
+			await writeAuditLog(client, {
+				actorUserId: req.user.id,
+				action: 'dispute.opened',
+				entityType: 'dispute',
+				entityId: dispute.rows[0].id,
+				meta: { order_id: orderId, reason },
+				ip: req.ip,
 			});
 			await client.query('COMMIT');
 			return res.status(201).json({ dispute: dispute.rows[0] });
@@ -117,6 +127,10 @@ export async function getDispute(req, res) {
 	}
 }
 
+/**
+ * Resolve dispute. Optional closed-loop refund:
+ * body: { status, resolution, issue_refund?: boolean, refund_amount_paise?: number }
+ */
 export async function resolveDispute(req, res) {
 	try {
 		if (!STAFF.includes(req.user.role)) {
@@ -126,6 +140,11 @@ export async function resolveDispute(req, res) {
 		const status = String(req.body.status || 'resolved');
 		if (!['resolved', 'rejected', 'escalated', 'in_review'].includes(status)) {
 			return res.status(400).json({ error: 'invalid status' });
+		}
+
+		const issueRefund = Boolean(req.body.issue_refund);
+		if (issueRefund && status !== 'resolved') {
+			return res.status(400).json({ error: 'issue_refund only allowed when status=resolved' });
 		}
 
 		const client = await pool.connect();
@@ -146,6 +165,22 @@ export async function resolveDispute(req, res) {
 				await client.query('ROLLBACK');
 				return res.status(404).json({ error: 'Not found' });
 			}
+
+			let refund = null;
+			if (issueRefund) {
+				const refundResult = await processRefund(client, {
+					orderId: result.rows[0].order_id,
+					amountPaise:
+						req.body.refund_amount_paise != null
+							? Number(req.body.refund_amount_paise)
+							: null,
+					reason: req.body.resolution || 'dispute_resolution',
+					actorUserId: req.user.id,
+					disputeId: id,
+				});
+				refund = refundResult.refund;
+			}
+
 			await enqueueOutbox(client, {
 				eventType: `dispute.${status}`,
 				aggregateType: 'dispute',
@@ -155,10 +190,23 @@ export async function resolveDispute(req, res) {
 					status,
 					resolved_by: req.user.id,
 					order_id: result.rows[0].order_id,
+					refund_id: refund?.id || null,
 				},
 			});
+			await writeAuditLog(client, {
+				actorUserId: req.user.id,
+				action: `dispute.${status}`,
+				entityType: 'dispute',
+				entityId: id,
+				meta: {
+					order_id: result.rows[0].order_id,
+					issue_refund: issueRefund,
+					refund_id: refund?.id || null,
+				},
+				ip: req.ip,
+			});
 			await client.query('COMMIT');
-			return res.json({ dispute: result.rows[0] });
+			return res.json({ dispute: result.rows[0], refund });
 		} catch (err) {
 			await client.query('ROLLBACK');
 			throw err;
@@ -167,6 +215,12 @@ export async function resolveDispute(req, res) {
 		}
 	} catch (err) {
 		console.error('resolveDispute', err);
+		if (err.code === 'PAYMENT_NOT_FOUND') {
+			return res.status(404).json({ error: 'No payment to refund for this order' });
+		}
+		if (['INVALID_AMOUNT', 'ALREADY_REFUNDED'].includes(err.code)) {
+			return res.status(400).json({ error: err.message, code: err.code });
+		}
 		return res.status(500).json({ error: 'Failed to update dispute' });
 	}
 }

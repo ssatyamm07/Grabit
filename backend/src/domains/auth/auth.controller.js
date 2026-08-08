@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import pool from '../../db.js';
+import { deliverLoginOtp } from '../../services/otp.js';
 
 function hashValue(value) {
 	return crypto.createHash('sha256').update(value).digest('hex');
@@ -61,9 +62,21 @@ export async function sendOtp(req, res) {
 			);
 		}
 
-		const payload = { ok: true, message: 'OTP sent' };
-		if (process.env.SHOW_OTP_IN_RESPONSE === 'true') {
-			payload.dev_otp = otp;
+		const delivery = await deliverLoginOtp(phone, otp);
+		if (!delivery.ok) {
+			console.error('sendOtp delivery failed', delivery);
+			return res.status(502).json({ error: 'Failed to deliver OTP', detail: delivery.error });
+		}
+
+		const payload = {
+			ok: true,
+			message: delivery.mode === 'dry_run' ? 'OTP generated (dry-run)' : 'OTP sent',
+			delivery: delivery.mode,
+		};
+		if (process.env.SHOW_OTP_IN_RESPONSE === 'true' || delivery.mode === 'dry_run') {
+			if (process.env.SHOW_OTP_IN_RESPONSE === 'true') {
+				payload.dev_otp = otp;
+			}
 		}
 
 		return res.json(payload);

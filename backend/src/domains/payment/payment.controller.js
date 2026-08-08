@@ -1,28 +1,34 @@
-import crypto from 'crypto';
 import pool from '../../db.js';
 import { writeLedgerEntry } from '../ledger/ledger.service.js';
 import { enqueueOutbox } from '../../events/outbox.js';
-
-function razorpayConfigured() {
-	return Boolean(process.env.RAZORPAY_KEY_ID?.trim() && process.env.RAZORPAY_KEY_SECRET?.trim());
-}
+import {
+	razorpayConfigured,
+	verifyCheckoutSignature,
+	verifyWebhookSignature,
+	createRazorpayOrder,
+} from '../../services/razorpay.js';
+import { processRefund } from '../../services/refund.js';
+import { writeAuditLog } from '../../services/audit.js';
 
 function commissionRateBps() {
-	return Number(process.env.COMMISSION_RATE_BPS || 1000); // 10%
+	return Number(process.env.COMMISSION_RATE_BPS || 1000);
 }
 
 /**
- * Create payment for an order.
- * COD: records payment as cod_pending / paid at delivery semantics.
- * Razorpay: creates local row + returns key_id + order stub (real Razorpay Orders API when keys set).
+ * Create payment for an order or service booking.
+ * body: { order_id? | booking_id?, provider: cod|razorpay }
  */
 export async function createPayment(req, res) {
-	const orderId = Number(req.body.order_id);
+	const orderId = req.body.order_id != null ? Number(req.body.order_id) : null;
+	const bookingId = req.body.booking_id != null ? Number(req.body.booking_id) : null;
 	const provider = String(req.body.provider || 'cod');
 	const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotency_key || null;
 
-	if (!Number.isInteger(orderId) || orderId < 1) {
-		return res.status(400).json({ error: 'order_id required' });
+	if (!orderId && !bookingId) {
+		return res.status(400).json({ error: 'order_id or booking_id required' });
+	}
+	if (orderId && bookingId) {
+		return res.status(400).json({ error: 'pass only one of order_id or booking_id' });
 	}
 	if (!['cod', 'razorpay'].includes(provider)) {
 		return res.status(400).json({ error: 'provider must be cod|razorpay' });
@@ -43,17 +49,52 @@ export async function createPayment(req, res) {
 			}
 		}
 
-		const orderRes = await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [
-			orderId,
-		]);
-		if (orderRes.rowCount === 0) {
-			await client.query('ROLLBACK');
-			return res.status(404).json({ error: 'Order not found' });
-		}
-		const order = orderRes.rows[0];
-		if (order.customer_id !== req.user.id && !['super_admin', 'support'].includes(req.user.role)) {
-			await client.query('ROLLBACK');
-			return res.status(403).json({ error: 'Forbidden' });
+		let customerId;
+		let amountPaise;
+		let receipt;
+		let notes;
+
+		if (orderId) {
+			const orderRes = await client.query(`SELECT * FROM orders WHERE id = $1 FOR UPDATE`, [
+				orderId,
+			]);
+			if (orderRes.rowCount === 0) {
+				await client.query('ROLLBACK');
+				return res.status(404).json({ error: 'Order not found' });
+			}
+			const order = orderRes.rows[0];
+			if (
+				order.customer_id !== req.user.id &&
+				!['super_admin', 'support'].includes(req.user.role)
+			) {
+				await client.query('ROLLBACK');
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+			customerId = order.customer_id;
+			amountPaise = order.total_paise;
+			receipt = `order_${order.id}`;
+			notes = { grabit_order_id: String(order.id) };
+		} else {
+			const bookingRes = await client.query(
+				`SELECT * FROM service_bookings WHERE id = $1 FOR UPDATE`,
+				[bookingId]
+			);
+			if (bookingRes.rowCount === 0) {
+				await client.query('ROLLBACK');
+				return res.status(404).json({ error: 'Booking not found' });
+			}
+			const booking = bookingRes.rows[0];
+			if (
+				booking.customer_id !== req.user.id &&
+				!['super_admin', 'support'].includes(req.user.role)
+			) {
+				await client.query('ROLLBACK');
+				return res.status(403).json({ error: 'Forbidden' });
+			}
+			customerId = booking.customer_id;
+			amountPaise = booking.price_paise;
+			receipt = `booking_${booking.id}`;
+			notes = { grabit_booking_id: String(booking.id) };
 		}
 
 		if (provider === 'razorpay' && !razorpayConfigured()) {
@@ -68,33 +109,21 @@ export async function createPayment(req, res) {
 		let razorpayPayload = null;
 
 		if (provider === 'razorpay') {
-			const auth = Buffer.from(
-				`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`
-			).toString('base64');
-			const rpRes = await fetch('https://api.razorpay.com/v1/orders', {
-				method: 'POST',
-				headers: {
-					Authorization: `Basic ${auth}`,
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify({
-					amount: order.total_paise,
-					currency: 'INR',
-					receipt: `order_${order.id}`,
-					notes: { grabit_order_id: String(order.id) },
-				}),
+			const rp = await createRazorpayOrder({
+				amountPaise,
+				receipt,
+				notes,
 			});
-			const rpData = await rpRes.json();
-			if (!rpRes.ok) {
+			if (!rp.ok) {
 				await client.query('ROLLBACK');
-				return res.status(502).json({ error: 'Razorpay order create failed', detail: rpData });
+				return res.status(502).json({ error: 'Razorpay order create failed', detail: rp.data });
 			}
-			razorpayOrderId = rpData.id;
+			razorpayOrderId = rp.data.id;
 			razorpayPayload = {
 				key_id: process.env.RAZORPAY_KEY_ID,
-				razorpay_order_id: rpData.id,
-				amount: rpData.amount,
-				currency: rpData.currency,
+				razorpay_order_id: rp.data.id,
+				amount: rp.data.amount,
+				currency: rp.data.currency,
 			};
 		}
 
@@ -103,15 +132,16 @@ export async function createPayment(req, res) {
 
 		const payment = await client.query(
 			`INSERT INTO payments (
-				order_id, customer_id, provider, amount_paise, status,
+				order_id, booking_id, customer_id, provider, amount_paise, status,
 				razorpay_order_id, idempotency_key, meta
-			 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+			 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
 			 RETURNING *`,
 			[
 				orderId,
-				order.customer_id,
+				bookingId,
+				customerId,
 				provider,
-				order.total_paise,
+				amountPaise,
 				status,
 				razorpayOrderId,
 				idempotencyKey,
@@ -119,17 +149,32 @@ export async function createPayment(req, res) {
 			]
 		);
 
-		await client.query(
-			`UPDATE orders SET payment_method = $1, payment_status = $2, updated_at = NOW()
-			 WHERE id = $3`,
-			[provider, paymentStatus, orderId]
-		);
+		if (orderId) {
+			await client.query(
+				`UPDATE orders SET payment_method = $1, payment_status = $2, updated_at = NOW()
+				 WHERE id = $3`,
+				[provider, paymentStatus, orderId]
+			);
+		} else {
+			await client.query(
+				`UPDATE service_bookings
+				 SET payment_method = $1, payment_status = $2, updated_at = NOW()
+				 WHERE id = $3`,
+				[provider, paymentStatus, bookingId]
+			);
+		}
 
 		await enqueueOutbox(client, {
 			eventType: 'payment.created',
 			aggregateType: 'payment',
 			aggregateId: String(payment.rows[0].id),
-			payload: { payment_id: payment.rows[0].id, order_id: orderId, provider },
+			payload: {
+				payment_id: payment.rows[0].id,
+				order_id: orderId,
+				booking_id: bookingId,
+				provider,
+				customer_id: customerId,
+			},
 		});
 
 		await client.query('COMMIT');
@@ -140,7 +185,7 @@ export async function createPayment(req, res) {
 	} catch (err) {
 		await client.query('ROLLBACK');
 		if (err.code === '23505') {
-			return res.status(409).json({ error: 'Payment already exists for order' });
+			return res.status(409).json({ error: 'Payment already exists for target' });
 		}
 		console.error('createPayment', err);
 		return res.status(500).json({ error: 'Failed to create payment' });
@@ -152,20 +197,29 @@ export async function createPayment(req, res) {
 export async function verifyPayment(req, res) {
 	const {
 		order_id: orderIdRaw,
+		booking_id: bookingIdRaw,
 		razorpay_order_id,
 		razorpay_payment_id,
 		razorpay_signature,
 	} = req.body;
-	const orderId = Number(orderIdRaw);
-	if (!Number.isInteger(orderId)) return res.status(400).json({ error: 'order_id required' });
+	const orderId = orderIdRaw != null ? Number(orderIdRaw) : null;
+	const bookingId = bookingIdRaw != null ? Number(bookingIdRaw) : null;
+	if (!orderId && !bookingId) {
+		return res.status(400).json({ error: 'order_id or booking_id required' });
+	}
 
 	const client = await pool.connect();
 	try {
 		await client.query('BEGIN');
-		const paymentRes = await client.query(
-			`SELECT * FROM payments WHERE order_id = $1 AND provider = 'razorpay' FOR UPDATE`,
-			[orderId]
-		);
+		const paymentRes = orderId
+			? await client.query(
+					`SELECT * FROM payments WHERE order_id = $1 AND provider = 'razorpay' FOR UPDATE`,
+					[orderId]
+				)
+			: await client.query(
+					`SELECT * FROM payments WHERE booking_id = $1 AND provider = 'razorpay' FOR UPDATE`,
+					[bookingId]
+				);
 		if (paymentRes.rowCount === 0) {
 			await client.query('ROLLBACK');
 			return res.status(404).json({ error: 'Payment not found' });
@@ -181,13 +235,13 @@ export async function verifyPayment(req, res) {
 			return res.status(503).json({ error: 'Razorpay not configured' });
 		}
 
-		const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-		const expected = crypto
-			.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-			.update(body)
-			.digest('hex');
+		const ok = verifyCheckoutSignature({
+			razorpay_order_id,
+			razorpay_payment_id,
+			razorpay_signature,
+		});
 
-		if (expected !== razorpay_signature) {
+		if (!ok) {
 			await client.query(
 				`UPDATE payments SET status = 'failed', updated_at = NOW() WHERE id = $1`,
 				[payment.id]
@@ -202,15 +256,28 @@ export async function verifyPayment(req, res) {
 			 WHERE id = $3 RETURNING *`,
 			[razorpay_payment_id, razorpay_signature, payment.id]
 		);
-		await client.query(
-			`UPDATE orders SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
-			[orderId]
-		);
+		if (payment.order_id) {
+			await client.query(
+				`UPDATE orders SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
+				[payment.order_id]
+			);
+		}
+		if (payment.booking_id) {
+			await client.query(
+				`UPDATE service_bookings SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
+				[payment.booking_id]
+			);
+		}
 		await enqueueOutbox(client, {
 			eventType: 'payment.paid',
 			aggregateType: 'payment',
 			aggregateId: String(payment.id),
-			payload: { payment_id: payment.id, order_id: orderId },
+			payload: {
+				payment_id: payment.id,
+				order_id: payment.order_id,
+				booking_id: payment.booking_id,
+				customer_id: payment.customer_id,
+			},
 		});
 		await client.query('COMMIT');
 		return res.json({ payment: updated.rows[0], verified: true });
@@ -230,32 +297,57 @@ export async function paymentWebhook(req, res) {
 			return res.status(503).json({ error: 'Razorpay not configured' });
 		}
 		const signature = req.headers['x-razorpay-signature'];
-		const raw = JSON.stringify(req.body);
-		const expected = crypto
-			.createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET)
-			.update(raw)
-			.digest('hex');
-
-		if (signature && signature !== expected) {
+		const raw = typeof req.rawBody === 'string' ? req.rawBody : JSON.stringify(req.body);
+		if (signature && !verifyWebhookSignature(raw, signature)) {
 			return res.status(400).json({ error: 'Invalid webhook signature' });
 		}
 
 		const event = req.body?.event;
 		const entity = req.body?.payload?.payment?.entity;
 		if (event === 'payment.captured' && entity?.order_id) {
-			await pool.query(
-				`UPDATE payments
-				 SET status = 'paid', razorpay_payment_id = $1, updated_at = NOW()
-				 WHERE razorpay_order_id = $2 AND status <> 'paid'`,
-				[entity.id, entity.order_id]
-			);
-			await pool.query(
-				`UPDATE orders o
-				 SET payment_status = 'paid', updated_at = NOW()
-				 FROM payments p
-				 WHERE p.order_id = o.id AND p.razorpay_order_id = $1`,
-				[entity.order_id]
-			);
+			const client = await pool.connect();
+			try {
+				await client.query('BEGIN');
+				const pay = await client.query(
+					`UPDATE payments
+					 SET status = 'paid', razorpay_payment_id = $1, updated_at = NOW()
+					 WHERE razorpay_order_id = $2 AND status <> 'paid'
+					 RETURNING *`,
+					[entity.id, entity.order_id]
+				);
+				if (pay.rowCount > 0) {
+					const p = pay.rows[0];
+					if (p.order_id) {
+						await client.query(
+							`UPDATE orders SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
+							[p.order_id]
+						);
+					}
+					if (p.booking_id) {
+						await client.query(
+							`UPDATE service_bookings SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
+							[p.booking_id]
+						);
+					}
+					await enqueueOutbox(client, {
+						eventType: 'payment.paid',
+						aggregateType: 'payment',
+						aggregateId: String(p.id),
+						payload: {
+							payment_id: p.id,
+							order_id: p.order_id,
+							booking_id: p.booking_id,
+							source: 'webhook',
+						},
+					});
+				}
+				await client.query('COMMIT');
+			} catch (err) {
+				await client.query('ROLLBACK');
+				throw err;
+			} finally {
+				client.release();
+			}
 		}
 
 		return res.json({ ok: true });
@@ -266,74 +358,43 @@ export async function paymentWebhook(req, res) {
 }
 
 export async function refundPayment(req, res) {
-	const orderId = Number(req.body.order_id);
+	const orderId = req.body.order_id != null ? Number(req.body.order_id) : null;
+	const bookingId = req.body.booking_id != null ? Number(req.body.booking_id) : null;
 	const amountPaise = req.body.amount_paise != null ? Number(req.body.amount_paise) : null;
 	const reason = req.body.reason || 'refund';
 
-	if (!Number.isInteger(orderId)) return res.status(400).json({ error: 'order_id required' });
+	if (!orderId && !bookingId) {
+		return res.status(400).json({ error: 'order_id or booking_id required' });
+	}
 
 	const client = await pool.connect();
 	try {
 		await client.query('BEGIN');
-		const paymentRes = await client.query(
-			`SELECT * FROM payments WHERE order_id = $1 ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-			[orderId]
-		);
-		if (paymentRes.rowCount === 0) {
-			await client.query('ROLLBACK');
-			return res.status(404).json({ error: 'Payment not found' });
-		}
-		const payment = paymentRes.rows[0];
-		const refundAmount = amountPaise || payment.amount_paise;
-		if (!Number.isInteger(refundAmount) || refundAmount <= 0 || refundAmount > payment.amount_paise) {
-			await client.query('ROLLBACK');
-			return res.status(400).json({ error: 'invalid amount_paise' });
-		}
-
-		const order = await client.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
-		const vendorId = order.rows[0].vendor_id;
-		const customerId = order.rows[0].customer_id;
-
-		await writeLedgerEntry(client, {
-			accountRef: `vendor:${vendorId}`,
-			direction: 'debit',
-			amountPaise: refundAmount,
-			reason: 'refund',
-			referenceType: 'order',
-			referenceId: String(orderId),
+		const result = await processRefund(client, {
+			orderId,
+			bookingId,
+			amountPaise,
+			reason,
+			actorUserId: req.user.id,
 		});
-		await writeLedgerEntry(client, {
-			accountRef: `customer:${customerId}`,
-			direction: 'credit',
-			amountPaise: refundAmount,
-			reason: 'refund',
-			referenceType: 'order',
-			referenceId: String(orderId),
+		await writeAuditLog(client, {
+			actorUserId: req.user.id,
+			action: 'payment.refund',
+			entityType: 'refund',
+			entityId: result.refund.id,
+			meta: { order_id: orderId, booking_id: bookingId, amount_paise: result.refund.amount_paise },
+			ip: req.ip,
 		});
-
-		const refund = await client.query(
-			`INSERT INTO refunds (payment_id, order_id, amount_paise, reason, status, created_by)
-			 VALUES ($1,$2,$3,$4,'processed',$5) RETURNING *`,
-			[payment.id, orderId, refundAmount, reason, req.user.id]
-		);
-
-		const newStatus =
-			refundAmount >= payment.amount_paise ? 'refunded' : 'partial_refund';
-		await client.query(`UPDATE payments SET status = $1, updated_at = NOW() WHERE id = $2`, [
-			newStatus,
-			payment.id,
-		]);
-		await client.query(
-			`UPDATE orders SET payment_status = 'refunded', status = CASE
-			   WHEN status NOT IN ('cancelled','rejected') THEN 'refunded' ELSE status END,
-			 updated_at = NOW() WHERE id = $1`,
-			[orderId]
-		);
-
 		await client.query('COMMIT');
-		return res.status(201).json({ refund: refund.rows[0] });
+		return res.status(201).json(result);
 	} catch (err) {
 		await client.query('ROLLBACK');
+		if (err.code === 'PAYMENT_NOT_FOUND') {
+			return res.status(404).json({ error: err.message });
+		}
+		if (['INVALID_AMOUNT', 'ALREADY_REFUNDED', 'REFUND_TARGET'].includes(err.code)) {
+			return res.status(400).json({ error: err.message, code: err.code });
+		}
 		console.error('refundPayment', err);
 		return res.status(500).json({ error: 'Failed to refund' });
 	} finally {

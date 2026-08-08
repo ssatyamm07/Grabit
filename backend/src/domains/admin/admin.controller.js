@@ -3,6 +3,7 @@ import { loadOrder } from '../orders/place-order.service.js';
 import { canTransition, stockActionFor } from '../orders/order.state.js';
 import { applyStockForOrderItems } from '../inventory/inventory.service.js';
 import { enqueueOutbox } from '../../events/outbox.js';
+import { shouldMaskPii, maskUserRow, writeAuditLog } from '../../services/audit.js';
 
 const STAFF = ['super_admin', 'regional_admin', 'support', 'field_agent'];
 
@@ -141,7 +142,18 @@ export async function listUsers(req, res) {
 			 LIMIT 100`,
 			[cityId, q]
 		);
-		return res.json({ users: result.rows });
+		const users = shouldMaskPii(req) ? result.rows.map(maskUserRow) : result.rows;
+		if (shouldMaskPii(req)) {
+			await writeAuditLog(pool, {
+				actorUserId: req.user.id,
+				action: 'users.list_masked',
+				entityType: 'users',
+				entityId: null,
+				meta: { count: users.length, q },
+				ip: req.ip,
+			});
+		}
+		return res.json({ users, pii_masked: shouldMaskPii(req) });
 	} catch (err) {
 		console.error('admin.listUsers', err);
 		return res.status(500).json({ error: 'Failed to list users' });
@@ -154,14 +166,36 @@ export async function deactivateUser(req, res) {
 		if (userId === req.user.id) {
 			return res.status(400).json({ error: 'Cannot deactivate yourself' });
 		}
-		const result = await pool.query(
-			`UPDATE users SET is_active = FALSE, updated_at = NOW()
-			 WHERE id = $1
-			 RETURNING id, name, phone, role, is_active`,
-			[userId]
-		);
-		if (result.rowCount === 0) return res.status(404).json({ error: 'User not found' });
-		return res.json({ user: result.rows[0] });
+		const client = await pool.connect();
+		try {
+			await client.query('BEGIN');
+			const result = await client.query(
+				`UPDATE users SET is_active = FALSE, updated_at = NOW()
+				 WHERE id = $1
+				 RETURNING id, name, phone, role, is_active`,
+				[userId]
+			);
+			if (result.rowCount === 0) {
+				await client.query('ROLLBACK');
+				return res.status(404).json({ error: 'User not found' });
+			}
+			await writeAuditLog(client, {
+				actorUserId: req.user.id,
+				action: 'user.deactivate',
+				entityType: 'user',
+				entityId: userId,
+				meta: { role: result.rows[0].role },
+				ip: req.ip,
+			});
+			await client.query('COMMIT');
+			const user = shouldMaskPii(req) ? maskUserRow(result.rows[0]) : result.rows[0];
+			return res.json({ user });
+		} catch (err) {
+			await client.query('ROLLBACK');
+			throw err;
+		} finally {
+			client.release();
+		}
 	} catch (err) {
 		console.error('admin.deactivateUser', err);
 		return res.status(500).json({ error: 'Failed to deactivate user' });

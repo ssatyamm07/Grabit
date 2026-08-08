@@ -169,6 +169,24 @@ export async function createBooking(req, res) {
 		}
 		const end = new Date(start.getTime() + s.duration_minutes * 60_000);
 
+		const conflict = await client.query(
+			`SELECT id FROM service_bookings
+			 WHERE vendor_id = $1
+			   AND status IN ('requested','accepted','in_progress')
+			   AND scheduled_start < $3
+			   AND COALESCE(scheduled_end, scheduled_start + INTERVAL '1 hour') > $2
+			 LIMIT 1`,
+			[s.vendor_id, start.toISOString(), end.toISOString()]
+		);
+		if (conflict.rowCount > 0) {
+			await client.query('ROLLBACK');
+			return res.status(409).json({
+				error: 'Time slot conflicts with an existing booking',
+				code: 'SLOT_CONFLICT',
+				conflict_booking_id: conflict.rows[0].id,
+			});
+		}
+
 		const booking = await client.query(
 			`INSERT INTO service_bookings (
 				customer_id, vendor_id, vendor_service_id, status,

@@ -1,8 +1,17 @@
 const hits = new Map();
 
-export function rateLimit({ windowMs = 15 * 60_000, max = 300 } = {}) {
+/**
+ * @param {{ windowMs?: number, max?: number, keyFn?: (req) => string, name?: string }} opts
+ */
+export function rateLimit({
+	windowMs = 15 * 60_000,
+	max = 300,
+	keyFn = (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown',
+	name = 'default',
+} = {}) {
 	return (req, res, next) => {
-		const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+		const raw = keyFn(req);
+		const key = `${name}:${raw}`;
 		const now = Date.now();
 		const entry = hits.get(key) || { count: 0, resetAt: now + windowMs };
 
@@ -23,4 +32,9 @@ export function rateLimit({ windowMs = 15 * 60_000, max = 300 } = {}) {
 
 		next();
 	};
+}
+
+/** Clear in-memory buckets (tests). */
+export function resetRateLimitBuckets() {
+	hits.clear();
 }
