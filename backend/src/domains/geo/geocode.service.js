@@ -1,5 +1,6 @@
 import { parseNominatimReverse, parseNominatimSearchResult } from '../../utils/nominatim.js';
 import { parseGoogleGeocodeResult, parseGoogleSearchResult } from '../../utils/googleGeocode.js';
+import { cached, roundCoord } from '../../utils/ttlCache.js';
 
 const NOMINATIM_HEADERS = {
 	'User-Agent': 'GrabitApp/1.0 (Contact: support@grabit.local)',
@@ -7,8 +8,26 @@ const NOMINATIM_HEADERS = {
 };
 const GEOCODE_TIMEOUT_MS = 5000;
 
+/** Cache TTLs — keep Maps quality, avoid paying twice for the same pin/query */
+const TTL = {
+	search: Number(process.env.MAPS_CACHE_TTL_SEARCH_MS || 6 * 60 * 60_000), // 6h
+	reverse: Number(process.env.MAPS_CACHE_TTL_REVERSE_MS || 24 * 60 * 60_000), // 24h
+	autocomplete: Number(process.env.MAPS_CACHE_TTL_AUTOCOMPLETE_MS || 30 * 60_000), // 30m
+	details: Number(process.env.MAPS_CACHE_TTL_DETAILS_MS || 24 * 60 * 60_000), // 24h
+	matrix: Number(process.env.MAPS_CACHE_TTL_MATRIX_MS || 60 * 60_000), // 1h
+};
+
 function getGoogleMapsApiKey() {
 	return process.env.GOOGLE_MAPS_API_KEY?.trim() || '';
+}
+
+/**
+ * google = always Distance Matrix when key set
+ * haversine = free estimate (default for high-frequency tracking)
+ * auto = Matrix for quotes, haversine elsewhere (set via options.purpose)
+ */
+function distanceMode() {
+	return (process.env.MAPS_DISTANCE_MODE || 'auto').toLowerCase();
 }
 
 async function fetchJson(url, headers = {}) {
@@ -74,33 +93,7 @@ async function reverseWithNominatim(latitude, longitude) {
 	return { ...parseNominatimReverse(data), latitude, longitude };
 }
 
-/**
- * Road distance via Google Distance Matrix when key present; else haversine estimate.
- */
-export async function distanceMeters(originLat, originLng, destLat, destLng) {
-	const apiKey = getGoogleMapsApiKey();
-	if (apiKey) {
-		try {
-			const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
-			url.searchParams.set('origins', `${originLat},${originLng}`);
-			url.searchParams.set('destinations', `${destLat},${destLng}`);
-			url.searchParams.set('mode', 'driving');
-			url.searchParams.set('region', 'in');
-			url.searchParams.set('key', apiKey);
-			const data = await fetchJson(url);
-			const element = data?.rows?.[0]?.elements?.[0];
-			if (element?.status === 'OK' && element.distance?.value != null) {
-				return {
-					distance_m: Number(element.distance.value),
-					duration_s: Number(element.duration?.value || 0),
-					provider: 'google_distance_matrix',
-				};
-			}
-		} catch (err) {
-			console.warn('Distance Matrix failed, using haversine:', err.message);
-		}
-	}
-
+function haversineDistance(originLat, originLng, destLat, destLng) {
 	const toRad = (d) => (d * Math.PI) / 180;
 	const R = 6371000;
 	const dLat = toRad(destLat - originLat);
@@ -116,6 +109,63 @@ export async function distanceMeters(originLat, originLng, destLat, destLng) {
 	};
 }
 
+async function googleDistanceMatrix(originLat, originLng, destLat, destLng) {
+	const apiKey = getGoogleMapsApiKey();
+	const oLat = roundCoord(originLat, 4);
+	const oLng = roundCoord(originLng, 4);
+	const dLat = roundCoord(destLat, 4);
+	const dLng = roundCoord(destLng, 4);
+	const key = `matrix:${oLat},${oLng}:${dLat},${dLng}`;
+
+	return cached(key, TTL.matrix, async () => {
+		const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
+		url.searchParams.set('origins', `${oLat},${oLng}`);
+		url.searchParams.set('destinations', `${dLat},${dLng}`);
+		url.searchParams.set('mode', 'driving');
+		url.searchParams.set('region', 'in');
+		url.searchParams.set('key', apiKey);
+		const data = await fetchJson(url);
+		const element = data?.rows?.[0]?.elements?.[0];
+		if (element?.status === 'OK' && element.distance?.value != null) {
+			return {
+				distance_m: Number(element.distance.value),
+				duration_s: Number(element.duration?.value || 0),
+				provider: 'google_distance_matrix',
+			};
+		}
+		throw new Error(element?.status || data.status || 'Distance Matrix failed');
+	});
+}
+
+/**
+ * Road distance.
+ * options.purpose: 'quote' | 'tracking' | 'generic'
+ * - quote → Google Matrix when key set (cached)
+ * - tracking → haversine by default (Matrix burns $ on every poll)
+ * MAPS_DISTANCE_MODE=google|haversine|auto overrides.
+ */
+export async function distanceMeters(originLat, originLng, destLat, destLng, options = {}) {
+	const purpose = options.purpose || 'generic';
+	const mode = distanceMode();
+	const apiKey = getGoogleMapsApiKey();
+
+	const useGoogle =
+		apiKey &&
+		(mode === 'google' ||
+			(mode === 'auto' && purpose === 'quote') ||
+			(mode !== 'haversine' && purpose === 'quote'));
+
+	if (useGoogle) {
+		try {
+			return await googleDistanceMatrix(originLat, originLng, destLat, destLng);
+		} catch (err) {
+			console.warn('Distance Matrix failed, using haversine:', err.message);
+		}
+	}
+
+	return haversineDistance(originLat, originLng, destLat, destLng);
+}
+
 export function getGeocodeProvider() {
 	return getGoogleMapsApiKey() ? 'google' : 'nominatim';
 }
@@ -124,68 +174,82 @@ export async function searchPlaces(query) {
 	const trimmed = String(query ?? '').trim();
 	if (trimmed.length < 3) return [];
 
-	if (getGoogleMapsApiKey()) {
-		try {
-			return await searchWithGoogle(trimmed);
-		} catch (error) {
-			console.warn('Google place search failed, falling back to Nominatim:', error.message);
+	const cacheKey = `search:${trimmed.toLowerCase()}`;
+	return cached(cacheKey, TTL.search, async () => {
+		if (getGoogleMapsApiKey()) {
+			try {
+				return await searchWithGoogle(trimmed);
+			} catch (error) {
+				console.warn('Google place search failed, falling back to Nominatim:', error.message);
+			}
 		}
-	}
-	return searchWithNominatim(trimmed);
+		return searchWithNominatim(trimmed);
+	});
 }
 
 export async function reverseGeocode(latitude, longitude) {
-	if (getGoogleMapsApiKey()) {
-		try {
-			return await reverseWithGoogle(latitude, longitude);
-		} catch (error) {
-			console.warn('Google reverse geocode failed, falling back to Nominatim:', error.message);
+	const lat = roundCoord(latitude, 4);
+	const lng = roundCoord(longitude, 4);
+	const cacheKey = `reverse:${lat},${lng}`;
+
+	return cached(cacheKey, TTL.reverse, async () => {
+		if (getGoogleMapsApiKey()) {
+			try {
+				return await reverseWithGoogle(lat, lng);
+			} catch (error) {
+				console.warn('Google reverse geocode failed, falling back to Nominatim:', error.message);
+			}
 		}
-	}
-	return reverseWithNominatim(latitude, longitude);
+		return reverseWithNominatim(lat, lng);
+	});
 }
 
 /**
- * Google Places Autocomplete (New) — falls back to geocode search without key.
- * Maps SDK is client-side; this powers address autocomplete from the API.
+ * Google Places Autocomplete — keep Google (user priority), cache + min length to cut spend.
  */
 export async function placesAutocomplete(input, { lat, lng, sessionToken } = {}) {
 	const trimmed = String(input ?? '').trim();
-	if (trimmed.length < 2) return [];
+	if (trimmed.length < 3) return [];
 
 	const apiKey = getGoogleMapsApiKey();
 	if (!apiKey) {
 		return searchPlaces(trimmed);
 	}
 
-	try {
-		const url = new URL('https://maps.googleapis.com/maps/api/place/autocomplete/json');
-		url.searchParams.set('input', trimmed);
-		url.searchParams.set('components', 'country:in');
-		url.searchParams.set('key', apiKey);
-		if (sessionToken) url.searchParams.set('sessiontoken', sessionToken);
-		if (Number.isFinite(lat) && Number.isFinite(lng)) {
-			url.searchParams.set('location', `${lat},${lng}`);
-			url.searchParams.set('radius', '30000');
-		}
+	const roundLat = Number.isFinite(lat) ? roundCoord(lat, 2) : '';
+	const roundLng = Number.isFinite(lng) ? roundCoord(lng, 2) : '';
+	const cacheKey = `ac:${trimmed.toLowerCase()}:${roundLat},${roundLng}`;
 
-		const data = await fetchJson(url);
-		if (data.status === 'ZERO_RESULTS') return [];
-		if (data.status !== 'OK') {
-			throw new Error(data.error_message || `Places autocomplete failed: ${data.status}`);
-		}
+	return cached(cacheKey, TTL.autocomplete, async () => {
+		try {
+			const url = new URL('https://maps.googleapis.com/maps/api/place/autocomplete/json');
+			url.searchParams.set('input', trimmed);
+			url.searchParams.set('components', 'country:in');
+			url.searchParams.set('key', apiKey);
+			if (sessionToken) url.searchParams.set('sessiontoken', sessionToken);
+			if (Number.isFinite(lat) && Number.isFinite(lng)) {
+				url.searchParams.set('location', `${lat},${lng}`);
+				url.searchParams.set('radius', '30000');
+			}
 
-		return (data.predictions ?? []).slice(0, 8).map((p) => ({
-			id: p.place_id,
-			label: p.structured_formatting?.main_text || p.description,
-			subtitle: p.description,
-			place_id: p.place_id,
-			types: p.types || [],
-		}));
-	} catch (err) {
-		console.warn('Places autocomplete failed, falling back to geocode search:', err.message);
-		return searchPlaces(trimmed);
-	}
+			const data = await fetchJson(url);
+			if (data.status === 'ZERO_RESULTS') return [];
+			if (data.status !== 'OK') {
+				throw new Error(data.error_message || `Places autocomplete failed: ${data.status}`);
+			}
+
+			return (data.predictions ?? []).slice(0, 6).map((p) => ({
+				id: p.place_id,
+				label: p.structured_formatting?.main_text || p.description,
+				subtitle: p.description,
+				place_id: p.place_id,
+				types: p.types || [],
+			}));
+		} catch (err) {
+			console.warn('Places autocomplete failed, falling back to geocode search:', err.message);
+			return searchPlaces(trimmed);
+		}
+	});
 }
 
 export async function placeDetails(placeId) {
@@ -196,32 +260,35 @@ export async function placeDetails(placeId) {
 		throw err;
 	}
 
-	const url = new URL('https://maps.googleapis.com/maps/api/place/details/json');
-	url.searchParams.set('place_id', placeId);
-	url.searchParams.set('fields', 'place_id,formatted_address,geometry,address_component,name');
-	url.searchParams.set('key', apiKey);
+	const id = String(placeId || '').trim();
+	return cached(`details:${id}`, TTL.details, async () => {
+		const url = new URL('https://maps.googleapis.com/maps/api/place/details/json');
+		url.searchParams.set('place_id', id);
+		url.searchParams.set('fields', 'place_id,formatted_address,geometry,address_component,name');
+		url.searchParams.set('key', apiKey);
 
-	const data = await fetchJson(url);
-	if (data.status !== 'OK' || !data.result) {
-		throw new Error(data.error_message || `Place details failed: ${data.status}`);
-	}
+		const data = await fetchJson(url);
+		if (data.status !== 'OK' || !data.result) {
+			throw new Error(data.error_message || `Place details failed: ${data.status}`);
+		}
 
-	const result = data.result;
-	const lat = Number(result.geometry?.location?.lat);
-	const lng = Number(result.geometry?.location?.lng);
-	const parsed = parseGoogleGeocodeResult(
-		{
-			address_components: result.address_components,
-			formatted_address: result.formatted_address,
-		},
-		lat,
-		lng
-	);
+		const result = data.result;
+		const lat = Number(result.geometry?.location?.lat);
+		const lng = Number(result.geometry?.location?.lng);
+		const parsed = parseGoogleGeocodeResult(
+			{
+				address_components: result.address_components,
+				formatted_address: result.formatted_address,
+			},
+			lat,
+			lng
+		);
 
-	return {
-		place_id: result.place_id,
-		name: result.name,
-		...parsed,
-		provider: 'google_places',
-	};
+		return {
+			place_id: result.place_id,
+			name: result.name,
+			...parsed,
+			provider: 'google_places',
+		};
+	});
 }

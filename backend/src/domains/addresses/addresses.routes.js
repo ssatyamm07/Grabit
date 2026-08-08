@@ -7,7 +7,7 @@ const router = Router();
 
 const geocodeRateLimit = rateLimit({
 	windowMs: 60_000,
-	max: 30,
+	max: Number.parseInt(process.env.MAPS_RATE_MAX_PER_MIN || '20', 10),
 });
 
 router.use(authenticateToken);

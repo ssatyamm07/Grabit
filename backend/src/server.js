@@ -26,7 +26,11 @@ await storage.init();
 
 const app = createApp();
 const server = http.createServer(app);
-attachRealtime(server);
+if (process.env.SOCKET_ENABLED !== 'false') {
+	attachRealtime(server);
+} else {
+	logger.info('Socket.IO disabled (SOCKET_ENABLED=false) — REST on demand only, no polling');
+}
 
 const PORT = Number(process.env.PORT || 3001);
 

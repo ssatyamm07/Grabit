@@ -6,9 +6,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 
 import { getOrderTracking } from '@/src/api/services';
-import { subscribeOrder } from '@/src/realtime/socket';
+import { isSocketPreferred, subscribeOrder } from '@/src/realtime/socket';
 import { brand, colors } from '@/src/theme/colors';
 import { spacing, surfaces } from '@/src/theme/tokens';
+
+type SocketState = 'connecting' | 'connected' | 'disconnected' | 'disabled';
 
 export default function OrderTrackScreen() {
 	const { id } = useLocalSearchParams<{ id: string }>();
@@ -16,20 +18,32 @@ export default function OrderTrackScreen() {
 	const insets = useSafeAreaInsets();
 	const router = useRouter();
 	const [live, setLive] = useState<Record<string, unknown> | null>(null);
+	const [socketState, setSocketState] = useState<SocketState>(
+		isSocketPreferred() ? 'connecting' : 'disabled'
+	);
 
+	// One-shot REST load only — no polling. Live path is Socket.IO.
 	const trackQ = useQuery({
 		queryKey: ['order-track', orderId],
 		queryFn: () => getOrderTracking(orderId),
 		enabled: Number.isInteger(orderId) && orderId > 0,
-		refetchInterval: 15_000,
+		refetchOnWindowFocus: false,
+		refetchInterval: false,
 	});
 
 	useEffect(() => {
 		if (!Number.isInteger(orderId) || orderId < 1) return;
-		return subscribeOrder(orderId, (payload) => {
-			setLive(payload);
-			void trackQ.refetch();
-		});
+		return subscribeOrder(
+			orderId,
+			(payload) => {
+				setLive(payload);
+				// Event-driven refresh when status changes (not an interval poll)
+				if (payload.status != null || payload.order != null) {
+					void trackQ.refetch();
+				}
+			},
+			setSocketState
+		);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [orderId]);
 
@@ -48,6 +62,15 @@ export default function OrderTrackScreen() {
 			: job?.partner_lng != null
 				? Number(job.partner_lng)
 				: null;
+
+	const liveHint =
+		socketState === 'connected'
+			? 'Live via Socket.IO'
+			: socketState === 'connecting'
+				? 'Connecting live…'
+				: socketState === 'disconnected'
+					? 'Live disconnected — pull refresh below'
+					: 'REST only — tap Refresh for latest';
 
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
@@ -82,7 +105,14 @@ export default function OrderTrackScreen() {
 					) : (
 						<Text style={styles.meta}>Waiting for rider location…</Text>
 					)}
-					<Text style={styles.hint}>Live updates via Socket.IO.</Text>
+					<Text style={styles.hint}>{liveHint}</Text>
+					{(socketState === 'disabled' || socketState === 'disconnected') && (
+						<Pressable style={styles.refreshBtn} onPress={() => void trackQ.refetch()}>
+							<Text style={styles.refreshText}>
+								{trackQ.isFetching ? 'Refreshing…' : 'Refresh'}
+							</Text>
+						</Pressable>
+					)}
 				</View>
 			)}
 		</View>
@@ -106,4 +136,13 @@ const styles = StyleSheet.create({
 	},
 	liveLabel: { fontWeight: '800', color: brand.primary, marginBottom: 4 },
 	hint: { marginTop: 8, fontSize: 12, color: brand.textMuted },
+	refreshBtn: {
+		marginTop: 8,
+		alignSelf: 'flex-start',
+		paddingHorizontal: 14,
+		paddingVertical: 8,
+		borderRadius: 10,
+		backgroundColor: brand.primary,
+	},
+	refreshText: { color: colors.neutral[0], fontWeight: '700' },
 });

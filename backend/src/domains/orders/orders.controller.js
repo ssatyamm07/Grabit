@@ -397,7 +397,9 @@ export async function deliveryQuote(req, res) {
 		}
 
 		const { distanceMeters } = await import('../geo/geocode.service.js');
-		const dist = await distanceMeters(Number(v.lat), Number(v.lng), lat, lng);
+		const dist = await distanceMeters(Number(v.lat), Number(v.lng), lat, lng, {
+			purpose: 'quote',
+		});
 		const inCoverage = dist.distance_m <= Number(v.coverage_radius_m || 3000);
 		const fee = deliveryFeePaise();
 
@@ -469,7 +471,9 @@ export async function trackOrder(req, res) {
 			Number.isFinite(dropLng)
 		) {
 			const { distanceMeters } = await import('../geo/geocode.service.js');
-			eta = await distanceMeters(fromLat, fromLng, dropLat, dropLng);
+			eta = await distanceMeters(fromLat, fromLng, dropLat, dropLng, {
+				purpose: 'tracking',
+			});
 		}
 
 		return res.json({

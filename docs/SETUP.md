@@ -164,17 +164,46 @@ JWT_SECRET=<≥32 random chars>
 SHOW_OTP_IN_RESPONSE=false
 OTP_DRY_RUN=false
 MSG91_AUTH_KEY=...
-MSG91_OTP_TEMPLATE_ID=...   # login OTP template (OTP variable)
-MSG91_TEMPLATE_ID=...       # transactional SMS template for outbox
+MSG91_OTP_TEMPLATE_ID=...   # login OTP (required — do not cut)
+MSG91_TEMPLATE_ID=...       # only if SMS_ORDER_UPDATES=true
 SMS_DRY_RUN=false
+SMS_ORDER_UPDATES=false     # optional savings: status via Expo push; OTP still real SMS
 PUSH_DRY_RUN=false
 EXPO_ACCESS_TOKEN=...
-RAZORPAY_KEY_ID=...
+GOOGLE_MAPS_API_KEY=...     # required — do not cut
+MAPS_DISTANCE_MODE=auto     # still Google Places/Geocode; Matrix only for quotes (cached)
+RAZORPAY_KEY_ID=...         # required — do not cut
 RAZORPAY_KEY_SECRET=...
 RAZORPAY_WEBHOOK_SECRET=...
-STORAGE_DRIVER=s3
+STORAGE_DRIVER=s3           # required — do not cut (MinIO is local-dev only)
+AWS_REGION=ap-south-1
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+S3_BUCKET=grabit-products
+S3_PUBLIC_URL=https://grabit-products.s3.ap-south-1.amazonaws.com
+SOCKET_ENABLED=true         # ON = live Socket.IO (no poll). OFF = REST on open + manual refresh only
 ORDER_ACCEPT_TTL_MINUTES=30
 ```
+
+### Lean live budget (cut elsewhere — not OTP / Maps / S3 / Razorpay)
+
+**Do not compromise:** MSG91 login OTP, Google Maps (addresses/places), S3 product images, Razorpay payments.
+
+**Realtime:** Socket.IO is free on your VPS — **use it for live tracking (no interval polling)**. If you set `SOCKET_ENABLED=false`, the app uses REST once on open + a manual Refresh button (no background poll).
+
+| Keep (required) | Safe to cut / defer |
+|-----------------|---------------------|
+| MSG91 **OTP** | Order/status **SMS** (`SMS_ORDER_UPDATES=false` → Expo push) |
+| Google Maps Places + Geocode | Distance Matrix on every track poll (haversine for ETA; Matrix for quotes only) |
+| S3 images | Huge buckets / CloudFront early — start with one small bucket |
+| Razorpay | Paying 2% is normal; no need for multiple gateways |
+| Socket.IO live updates | Interval REST polling (removed — do not reintroduce) |
+| — | Fancy multi-AZ RDS; one small VPS (or Lightsail) is enough |
+| — | Apple App Store until Play APK works |
+| — | Paid Sentry / extra monitoring |
+| — | Redis Cloud — run Redis on the same VPS |
+
+**Rough monthly (with OTP + Maps + S3 + Razorpay):** ~**₹5k–12k** infra/SaaS + Razorpay % on online GMV + Maps usage (capped by cache) + OTP volume.
 
 Run **API + outbox worker + expire worker** as three processes. Health: `GET /api/health` includes DB + outbox backlog.
 

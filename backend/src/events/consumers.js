@@ -1,7 +1,7 @@
 import { pushToUser, smsToUser } from '../services/notifications.js';
 import { recordAnalyticsEvent } from '../services/analytics.js';
 
-const SMS_EVENTS = new Set([
+const SMS_EVENTS_FULL = new Set([
 	'order.placed',
 	'order.delivered',
 	'order.cancelled',
@@ -12,6 +12,11 @@ const SMS_EVENTS = new Set([
 	'store_verification.failed',
 	'payment.paid',
 ]);
+
+/** Lean default: SMS only for login OTP (separate path). Order updates = free Expo push. */
+function smsEventsEnabled() {
+	return process.env.SMS_ORDER_UPDATES === 'true';
+}
 
 function titleFor(eventType) {
 	const map = {
@@ -64,7 +69,7 @@ function bodyFor(eventType, payload) {
  */
 export async function resolveRecipients(client, { event_type: eventType, payload }) {
 	const p = typeof payload === 'string' ? JSON.parse(payload) : payload || {};
-	const wantSms = SMS_EVENTS.has(eventType);
+	const wantSms = smsEventsEnabled() && SMS_EVENTS_FULL.has(eventType);
 	const channels = wantSms ? ['push', 'sms'] : ['push'];
 	const recipients = new Map();
 
