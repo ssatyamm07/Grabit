@@ -5,6 +5,7 @@ import {
 	FlatList,
 	Pressable,
 	StyleSheet,
+	Switch,
 	Text,
 	TextInput,
 	View,
@@ -20,14 +21,25 @@ import {
 	createListing,
 	formatPaise,
 	getLedger,
+	getVendorMe,
 	listMyListings,
 	listVendorOrders,
+	patchInventory,
+	patchListing,
+	patchVendorMe,
 	searchCatalog,
 	transitionOrder,
 } from '@/src/api/services';
 import { useAuthStore } from '@/src/store/auth.store';
 import { brand, colors } from '@/src/theme/colors';
 import { spacing, surfaces } from '@/src/theme/tokens';
+
+type VendorOrder = {
+	id: number;
+	status: string;
+	total_paise: number;
+	fulfillment_mode?: string;
+};
 
 export default function VendorHome() {
 	const insets = useSafeAreaInsets();
@@ -39,7 +51,9 @@ export default function VendorHome() {
 	const [priceRupees, setPriceRupees] = useState('33');
 	const [qty, setQty] = useState('20');
 	const [selectedMasterId, setSelectedMasterId] = useState<number | null>(null);
+	const [lastOtp, setLastOtp] = useState<string | null>(null);
 
+	const vendorQ = useQuery({ queryKey: ['vendor-me'], queryFn: getVendorMe });
 	const listingsQ = useQuery({ queryKey: ['my-listings'], queryFn: listMyListings });
 	const ordersQ = useQuery({ queryKey: ['vendor-orders'], queryFn: listVendorOrders });
 	const ledgerQ = useQuery({ queryKey: ['ledger'], queryFn: getLedger });
@@ -49,9 +63,16 @@ export default function VendorHome() {
 		enabled: tab === 'add' && search.trim().length > 0,
 	});
 
-	const openOrders = (ordersQ.data || []).filter((o) =>
+	const isOpen = Boolean(vendorQ.data?.vendor?.is_open);
+	const openOrders = ((ordersQ.data || []) as VendorOrder[]).filter((o) =>
 		['placed', 'accepted', 'preparing', 'ready', 'picked'].includes(String(o.status))
 	);
+
+	const openMut = useMutation({
+		mutationFn: (next: boolean) => patchVendorMe({ is_open: next }),
+		onSuccess: () => void qc.invalidateQueries({ queryKey: ['vendor-me'] }),
+		onError: (err: Error) => Alert.alert('Failed', err.message),
+	});
 
 	const addMut = useMutation({
 		mutationFn: async () => {
@@ -73,7 +94,11 @@ export default function VendorHome() {
 
 	const transitionMut = useMutation({
 		mutationFn: ({ id, to }: { id: number; to: string }) => transitionOrder(id, to),
-		onSuccess: () => {
+		onSuccess: (res) => {
+			if (res.delivery_otp) {
+				setLastOtp(res.delivery_otp);
+				Alert.alert('Ready', `Door OTP for rider/customer: ${res.delivery_otp}`);
+			}
 			void qc.invalidateQueries({ queryKey: ['vendor-orders'] });
 			void qc.invalidateQueries({ queryKey: ['my-listings'] });
 			void qc.invalidateQueries({ queryKey: ['ledger'] });
@@ -81,24 +106,130 @@ export default function VendorHome() {
 		onError: (err: Error) => Alert.alert('Update failed', err.message),
 	});
 
+	const listingMut = useMutation({
+		mutationFn: ({ id, is_active }: { id: number; is_active: boolean }) =>
+			patchListing(id, { is_active }),
+		onSuccess: () => void qc.invalidateQueries({ queryKey: ['my-listings'] }),
+		onError: (err: Error) => Alert.alert('Failed', err.message),
+	});
+
+	const stockMut = useMutation({
+		mutationFn: ({ id, qty: nextQty }: { id: number; qty: number }) => patchInventory(id, nextQty),
+		onSuccess: () => void qc.invalidateQueries({ queryKey: ['my-listings'] }),
+		onError: (err: Error) => Alert.alert('Stock failed', err.message),
+	});
+
+	function nextActions(item: VendorOrder) {
+		const partner = item.fulfillment_mode === 'partner';
+		if (item.status === 'placed') {
+			return (
+				<>
+					<Button
+						title="Accept"
+						variant="success"
+						style={styles.actionBtn}
+						onPress={() => transitionMut.mutate({ id: item.id, to: 'accepted' })}
+					/>
+					<Button
+						title="Reject"
+						variant="accent"
+						style={styles.actionBtn}
+						onPress={() => transitionMut.mutate({ id: item.id, to: 'rejected' })}
+					/>
+				</>
+			);
+		}
+		if (item.status === 'accepted') {
+			return (
+				<Button
+					title="Preparing"
+					variant="primary"
+					style={styles.actionBtn}
+					onPress={() => transitionMut.mutate({ id: item.id, to: 'preparing' })}
+				/>
+			);
+		}
+		if (item.status === 'preparing') {
+			return (
+				<Button
+					title="Mark ready"
+					variant="primary"
+					style={styles.actionBtn}
+					onPress={() => transitionMut.mutate({ id: item.id, to: 'ready' })}
+				/>
+			);
+		}
+		if (item.status === 'ready') {
+			if (partner) {
+				return (
+					<Text style={styles.hint}>Partner delivery — waiting for rider pickup</Text>
+				);
+			}
+			return (
+				<Button
+					title="Picked (self)"
+					variant="primary"
+					style={styles.actionBtn}
+					onPress={() => transitionMut.mutate({ id: item.id, to: 'picked' })}
+				/>
+			);
+		}
+		if (item.status === 'picked' && !partner) {
+			return (
+				<Button
+					title="Delivered"
+					variant="success"
+					style={styles.actionBtn}
+					onPress={() => transitionMut.mutate({ id: item.id, to: 'delivered' })}
+				/>
+			);
+		}
+		return null;
+	}
+
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
 			<View style={styles.header}>
-				<View>
-					<Text style={styles.title}>Vendor desk</Text>
+				<View style={{ flex: 1 }}>
+					<Text style={styles.title}>
+						{String(vendorQ.data?.vendor?.business_name || 'Vendor desk')}
+					</Text>
 					<Text style={styles.meta}>
 						{user?.phone} · {formatPaise(ledgerQ.data?.balance_paise ?? 0)} receivable
 					</Text>
 				</View>
+				<View style={styles.openRow}>
+					<Text style={[styles.openLabel, { color: isOpen ? brand.success : brand.textMuted }]}>
+						{isOpen ? 'Open' : 'Closed'}
+					</Text>
+					<Switch
+						value={isOpen}
+						onValueChange={(v) => openMut.mutate(v)}
+						trackColor={{ false: colors.neutral[200], true: colors.green[300] }}
+						thumbColor={isOpen ? brand.success : colors.neutral[0]}
+					/>
+				</View>
 			</View>
+
+			{lastOtp ? (
+				<View style={styles.otpBanner}>
+					<Text style={styles.otpText}>Last door OTP: {lastOtp}</Text>
+				</View>
+			) : null}
 
 			<View style={styles.stats}>
 				{[
-					{ label: 'Listings', value: listingsQ.data?.listings.length ?? 0, bg: colors.blue[50], color: brand.primary },
+					{
+						label: 'Listings',
+						value: listingsQ.data?.listings.length ?? 0,
+						bg: colors.blue[50],
+						color: brand.primary,
+					},
 					{ label: 'Open', value: openOrders.length, bg: colors.yellow[50], color: colors.yellow[600] },
 					{
 						label: 'Done',
-						value: (ordersQ.data || []).filter((o) => o.status === 'delivered').length,
+						value: ((ordersQ.data || []) as VendorOrder[]).filter((o) => o.status === 'delivered')
+							.length,
 						bg: colors.green[50],
 						color: brand.success,
 					},
@@ -112,7 +243,11 @@ export default function VendorHome() {
 
 			<View style={styles.tabs}>
 				{(['orders', 'listings', 'add'] as const).map((t) => (
-					<Pressable key={t} style={[styles.tab, tab === t && styles.tabActive]} onPress={() => setTab(t)}>
+					<Pressable
+						key={t}
+						style={[styles.tab, tab === t && styles.tabActive]}
+						onPress={() => setTab(t)}
+					>
 						<Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
 							{t === 'add' ? '+ Add' : t[0].toUpperCase() + t.slice(1)}
 						</Text>
@@ -122,7 +257,7 @@ export default function VendorHome() {
 
 			{tab === 'orders' ? (
 				<FlatList
-					data={(ordersQ.data || []) as Array<{ id: number; status: string; total_paise: number }>}
+					data={(ordersQ.data || []) as VendorOrder[]}
 					keyExtractor={(item) => String(item.id)}
 					refreshing={ordersQ.isFetching}
 					onRefresh={() => void ordersQ.refetch()}
@@ -130,7 +265,7 @@ export default function VendorHome() {
 						<EmptyState
 							icon={<Ionicons name="receipt-outline" size={36} color={brand.primary} />}
 							title="No orders"
-							subtitle="Customer COD orders will appear here."
+							subtitle="Customer orders will appear here."
 						/>
 					}
 					renderItem={({ item }) => (
@@ -138,26 +273,10 @@ export default function VendorHome() {
 							<Text style={styles.cardTitle}>
 								#{item.id} · {item.status} · {formatPaise(item.total_paise)}
 							</Text>
-							<View style={styles.actions}>
-								{item.status === 'placed' ? (
-									<>
-										<Button title="Accept" variant="success" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'accepted' })} />
-										<Button title="Reject" variant="accent" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'rejected' })} />
-									</>
-								) : null}
-								{item.status === 'accepted' ? (
-									<Button title="Preparing" variant="primary" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'preparing' })} />
-								) : null}
-								{item.status === 'preparing' ? (
-									<Button title="Ready" variant="primary" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'ready' })} />
-								) : null}
-								{item.status === 'ready' ? (
-									<Button title="Picked" variant="primary" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'picked' })} />
-								) : null}
-								{item.status === 'picked' ? (
-									<Button title="Delivered" variant="success" style={styles.actionBtn} onPress={() => transitionMut.mutate({ id: item.id, to: 'delivered' })} />
-								) : null}
-							</View>
+							<Text style={styles.meta}>
+								Fulfillment: {item.fulfillment_mode || 'default'}
+							</Text>
+							<View style={styles.actions}>{nextActions(item)}</View>
 						</View>
 					)}
 				/>
@@ -176,8 +295,25 @@ export default function VendorHome() {
 						<View style={styles.card}>
 							<Text style={styles.cardTitle}>{item.name}</Text>
 							<Text style={styles.meta}>
-								{formatPaise(item.price_paise)} · avail {item.available_qty} (reserved {item.reserved_qty})
+								{formatPaise(item.price_paise)} · avail {item.available_qty} (reserved{' '}
+								{item.reserved_qty})
 							</Text>
+							<View style={styles.actions}>
+								<Button
+									title="+5 stock"
+									variant="secondary"
+									style={styles.actionBtn}
+									onPress={() =>
+										stockMut.mutate({ id: item.id, qty: item.qty + 5 })
+									}
+								/>
+								<Button
+									title="Deactivate"
+									variant="accent"
+									style={styles.actionBtn}
+									onPress={() => listingMut.mutate({ id: item.id, is_active: false })}
+								/>
+							</View>
 						</View>
 					)}
 				/>
@@ -193,8 +329,22 @@ export default function VendorHome() {
 						placeholderTextColor={brand.textMuted}
 					/>
 					<View style={styles.rowInputs}>
-						<TextInput style={[styles.input, { flex: 1 }]} value={priceRupees} onChangeText={setPriceRupees} keyboardType="decimal-pad" placeholder="Price ₹" placeholderTextColor={brand.textMuted} />
-						<TextInput style={[styles.input, { flex: 1 }]} value={qty} onChangeText={setQty} keyboardType="number-pad" placeholder="Qty" placeholderTextColor={brand.textMuted} />
+						<TextInput
+							style={[styles.input, { flex: 1 }]}
+							value={priceRupees}
+							onChangeText={setPriceRupees}
+							keyboardType="decimal-pad"
+							placeholder="Price ₹"
+							placeholderTextColor={brand.textMuted}
+						/>
+						<TextInput
+							style={[styles.input, { flex: 1 }]}
+							value={qty}
+							onChangeText={setQty}
+							keyboardType="number-pad"
+							placeholder="Qty"
+							placeholderTextColor={brand.textMuted}
+						/>
 					</View>
 					{catalogQ.isFetching ? <ActivityIndicator color={brand.primary} /> : null}
 					<FlatList
@@ -206,7 +356,9 @@ export default function VendorHome() {
 								onPress={() => setSelectedMasterId(item.id)}
 							>
 								<Text style={styles.cardTitle}>{item.name}</Text>
-								<Text style={styles.meta}>{[item.brand, item.unit_label].filter(Boolean).join(' · ')}</Text>
+								<Text style={styles.meta}>
+									{[item.brand, item.unit_label].filter(Boolean).join(' · ')}
+								</Text>
 							</Pressable>
 						)}
 					/>
@@ -234,9 +386,18 @@ export default function VendorHome() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: brand.bg, paddingHorizontal: spacing.md },
-	header: { marginBottom: spacing.sm },
-	title: { fontSize: 28, fontWeight: '800', color: brand.text },
+	header: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: spacing.sm },
+	title: { fontSize: 24, fontWeight: '800', color: brand.text },
 	meta: { color: brand.textMuted, marginTop: 4 },
+	openRow: { alignItems: 'center', gap: 4 },
+	openLabel: { fontWeight: '800', fontSize: 12 },
+	otpBanner: {
+		backgroundColor: colors.yellow[50],
+		borderRadius: 12,
+		padding: spacing.sm,
+		marginBottom: spacing.sm,
+	},
+	otpText: { fontWeight: '800', color: colors.yellow[600] },
 	stats: { flexDirection: 'row', gap: 8, marginTop: spacing.sm },
 	stat: { flex: 1, borderRadius: 14, padding: spacing.sm, alignItems: 'center' },
 	statNum: { fontSize: 20, fontWeight: '800' },
@@ -256,6 +417,7 @@ const styles = StyleSheet.create({
 	cardTitle: { fontSize: 16, fontWeight: '700', color: brand.text },
 	actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: spacing.sm },
 	actionBtn: { minHeight: 40, paddingVertical: 8, paddingHorizontal: 12, flexGrow: 0 },
+	hint: { color: brand.primary, fontWeight: '600', marginTop: 4 },
 	input: {
 		backgroundColor: brand.surface,
 		borderWidth: 1.5,

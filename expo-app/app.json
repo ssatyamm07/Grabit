@@ -31,7 +31,20 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#1B6CA8"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Grabit uses your location to share rider position with customers."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

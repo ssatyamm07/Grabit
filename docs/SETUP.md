@@ -205,6 +205,27 @@ ORDER_ACCEPT_TTL_MINUTES=30
 
 **Rough monthly (with OTP + Maps + S3 + Razorpay):** ~**₹5k–12k** infra/SaaS + Razorpay % on online GMV + Maps usage (capped by cache) + OTP volume.
 
+### Live keys wiring checklist (required four)
+
+Fill `backend/.env` for production (never commit secrets):
+
+| Key | Service | Notes |
+|-----|---------|--------|
+| `MSG91_AUTH_KEY`, `MSG91_OTP_TEMPLATE_ID` | OTP | `OTP_DRY_RUN=false`, `SHOW_OTP_IN_RESPONSE=false` |
+| `GOOGLE_MAPS_API_KEY` | Maps | Restrict by IP/bundle in Google Cloud |
+| `STORAGE_DRIVER=s3` + `AWS_*` + `S3_BUCKET` | S3 | `ap-south-1` |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Payments | Webhook → `https://<host>/api/payment/webhook` |
+| `EXPO_ACCESS_TOKEN`, `PUSH_DRY_RUN=false` | Push | App registers via `POST /api/devices/register` after login |
+| `SMS_ORDER_UPDATES=false` | Cost | Status via Expo push; OTP SMS unchanged |
+
+Smoke:
+
+```bash
+npm run smoke:razorpay
+curl -X POST http://localhost:3001/api/auth/send-otp -H 'Content-Type: application/json' -d '{"phone":"9111111111"}'
+# App: login as delivery 9000000088 → rider desk; vendor 9000000001 → open toggle
+```
+
 Run **API + outbox worker + expire worker** as three processes. Health: `GET /api/health` includes DB + outbox backlog.
 
 Or with PM2 from `backend/`:

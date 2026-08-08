@@ -1,4 +1,5 @@
-import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,7 +8,12 @@ import { useRouter } from 'expo-router';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ScalePressable } from '@/components/ui/ScalePressable';
-import { formatPaise, newIdempotencyKey, placeOrder } from '@/src/api/services';
+import {
+	createPayment,
+	formatPaise,
+	newIdempotencyKey,
+	placeOrder,
+} from '@/src/api/services';
 import { useCartStore } from '@/src/store/cart.store';
 import { useToastStore } from '@/src/store/toast.store';
 import { brand, colors } from '@/src/theme/colors';
@@ -24,19 +30,34 @@ export default function CartScreen() {
 	const subtotal = useCartStore((s) => s.subtotalPaise());
 	const vendorId = useCartStore((s) => s.vendorId());
 	const toast = useToastStore((s) => s.show);
+	const [payMethod, setPayMethod] = useState<'cod' | 'razorpay'>('cod');
 
 	const orderMut = useMutation({
 		mutationFn: async () => {
 			if (!vendorId || !lines.length) throw new Error('Cart empty');
-			return placeOrder({
+			const placed = await placeOrder({
 				vendor_id: vendorId,
 				items: lines.map((l) => ({ listing_id: l.listing_id, qty: l.qty })),
+				payment_method: payMethod,
 				idempotencyKey: newIdempotencyKey(),
 			});
+			const pay = await createPayment({
+				order_id: placed.order.id,
+				provider: payMethod,
+				idempotencyKey: newIdempotencyKey(),
+			});
+			return { placed, pay };
 		},
-		onSuccess: (res) => {
+		onSuccess: ({ placed, pay }) => {
 			clear();
-			toast(`Order #${res.order.id} placed`, 'success');
+			if (payMethod === 'razorpay' && pay.razorpay) {
+				toast(
+					`Order #${placed.order.id} — Razorpay ${pay.razorpay.razorpay_order_id}`,
+					'success'
+				);
+			} else {
+				toast(`Order #${placed.order.id} placed (COD)`, 'success');
+			}
 			router.push('/(customer)/(tabs)/orders');
 		},
 		onError: (err: Error) => Alert.alert('Order failed', err.message),
@@ -70,7 +91,7 @@ export default function CartScreen() {
 			<FlatList
 				data={lines}
 				keyExtractor={(item) => String(item.listing_id)}
-				contentContainerStyle={{ paddingBottom: 160 }}
+				contentContainerStyle={{ paddingBottom: 220 }}
 				renderItem={({ item }) => (
 					<View style={styles.line}>
 						<View style={{ flex: 1 }}>
@@ -78,11 +99,17 @@ export default function CartScreen() {
 							<Text style={styles.lineMeta}>{formatPaise(item.price_paise)} each</Text>
 						</View>
 						<View style={styles.stepper}>
-							<ScalePressable style={styles.stepBtn} onPress={() => setQty(item.listing_id, item.qty - 1)}>
+							<ScalePressable
+								style={styles.stepBtn}
+								onPress={() => setQty(item.listing_id, item.qty - 1)}
+							>
 								<Text style={styles.stepText}>−</Text>
 							</ScalePressable>
 							<Text style={styles.qty}>{item.qty}</Text>
-							<ScalePressable style={styles.stepBtn} onPress={() => setQty(item.listing_id, item.qty + 1)}>
+							<ScalePressable
+								style={styles.stepBtn}
+								onPress={() => setQty(item.listing_id, item.qty + 1)}
+							>
 								<Text style={styles.stepText}>+</Text>
 							</ScalePressable>
 						</View>
@@ -91,14 +118,31 @@ export default function CartScreen() {
 			/>
 
 			<View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+				<View style={styles.payRow}>
+					{(['cod', 'razorpay'] as const).map((m) => (
+						<Pressable
+							key={m}
+							style={[styles.payChip, payMethod === m && styles.payChipOn]}
+							onPress={() => setPayMethod(m)}
+						>
+							<Text style={[styles.payChipText, payMethod === m && styles.payChipTextOn]}>
+								{m === 'cod' ? 'COD' : 'Razorpay'}
+							</Text>
+						</Pressable>
+					))}
+				</View>
 				<View style={styles.summary}>
 					<Text style={styles.sumRow}>Subtotal · {formatPaise(subtotal)}</Text>
 					<Text style={styles.sumRow}>Delivery · {formatPaise(DELIVERY_FEE_PAISE)}</Text>
 					<Text style={styles.grand}>Total · {formatPaise(total)}</Text>
-					<Text style={styles.cod}>Pay on delivery (COD)</Text>
+					<Text style={styles.cod}>
+						{payMethod === 'cod'
+							? 'Pay on delivery (COD)'
+							: 'Online via Razorpay (needs live keys)'}
+					</Text>
 				</View>
 				<Button
-					title="Place order"
+					title={payMethod === 'cod' ? 'Place order' : 'Place + create Razorpay'}
 					loading={orderMut.isPending}
 					onPress={() => orderMut.mutate()}
 				/>
@@ -151,6 +195,18 @@ const styles = StyleSheet.create({
 		padding: spacing.md,
 		gap: spacing.sm,
 	},
+	payRow: { flexDirection: 'row', gap: 8 },
+	payChip: {
+		paddingHorizontal: 14,
+		paddingVertical: 8,
+		borderRadius: 999,
+		borderWidth: 1.5,
+		borderColor: brand.border,
+		backgroundColor: colors.neutral[50],
+	},
+	payChipOn: { borderColor: brand.primary, backgroundColor: colors.blue[50] },
+	payChipText: { fontWeight: '700', color: brand.textMuted, fontSize: 13 },
+	payChipTextOn: { color: brand.primary },
 	summary: { gap: 2 },
 	sumRow: { color: brand.textMuted, fontSize: 13 },
 	grand: { fontSize: 18, fontWeight: '800', color: brand.text, marginTop: 4 },

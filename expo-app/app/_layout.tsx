@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native';
 
 import { queryClient } from '@/src/query/query-client';
+import { registerForPushNotifications } from '@/src/push/register';
 import { useAuthStore } from '@/src/store/auth.store';
 import { useCartStore } from '@/src/store/cart.store';
 import { brand } from '@/src/theme/colors';
@@ -14,10 +15,19 @@ import { brand } from '@/src/theme/colors';
 export default function RootLayout() {
 	const hydrateAuth = useAuthStore((s) => s.hydrate);
 	const hydrateCart = useCartStore((s) => s.hydrate);
+	const token = useAuthStore((s) => s.accessToken);
+	const hydrated = useAuthStore((s) => s.hydrated);
 
 	useEffect(() => {
 		void Promise.all([hydrateAuth(), hydrateCart()]);
 	}, [hydrateAuth, hydrateCart]);
+
+	useEffect(() => {
+		if (!hydrated || !token) return;
+		void registerForPushNotifications().catch((err) => {
+			console.warn('[push] register failed', err);
+		});
+	}, [hydrated, token]);
 
 	return (
 		<GestureHandlerRootView style={styles.root}>
@@ -34,6 +44,7 @@ export default function RootLayout() {
 						<Stack.Screen name="(auth)/login" />
 						<Stack.Screen name="(customer)" />
 						<Stack.Screen name="(vendor)/home" />
+						<Stack.Screen name="(delivery)/home" />
 						<Stack.Screen name="(admin)" />
 					</Stack>
 				</QueryClientProvider>

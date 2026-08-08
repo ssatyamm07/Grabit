@@ -130,10 +130,13 @@ export async function listVendorOrders() {
 }
 
 export async function transitionOrder(orderId: number, to_status: string) {
-	return api<{ order: Record<string, unknown> }>(`/orders/${orderId}/transition`, {
-		method: 'POST',
-		body: { to_status },
-	});
+	return api<{ order: Record<string, unknown>; delivery_otp?: string }>(
+		`/orders/${orderId}/transition`,
+		{
+			method: 'POST',
+			body: { to_status },
+		}
+	);
 }
 
 export async function listMyListings() {
@@ -235,6 +238,129 @@ export async function resolveDispute(id: number, resolution: string, issue_refun
 	return api<{ dispute: Record<string, unknown> }>(`/disputes/${id}/resolve`, {
 		method: 'POST',
 		body: { status: 'resolved', resolution, issue_refund: !!issue_refund },
+	});
+}
+
+export async function getVendorMe() {
+	return api<{ vendor: Record<string, unknown> & { id: number; is_open: boolean; business_name: string } }>(
+		'/vendors/me'
+	);
+}
+
+export async function patchVendorMe(body: {
+	is_open?: boolean;
+	business_name?: string;
+	coverage_radius_m?: number;
+	fulfillment_mode_default?: string;
+}) {
+	return api<{ vendor: Record<string, unknown> }>('/vendors/me', { method: 'PATCH', body });
+}
+
+export async function patchListing(
+	id: number,
+	body: { price_paise?: number; mrp_paise?: number; is_active?: boolean }
+) {
+	return api<{ listing: Record<string, unknown> }>(`/vendors/me/listings/${id}`, {
+		method: 'PATCH',
+		body,
+	});
+}
+
+export async function patchInventory(id: number, qty: number) {
+	return api<{ inventory: Record<string, unknown> }>(`/vendors/me/inventory/${id}`, {
+		method: 'PATCH',
+		body: { qty },
+	});
+}
+
+export async function getDeliveryMe() {
+	return api<{ partner: Record<string, unknown> }>('/delivery/me');
+}
+
+export async function patchDeliveryLocation(lat: number, lng: number) {
+	return api<{ partner: Record<string, unknown> }>('/delivery/me/location', {
+		method: 'PATCH',
+		body: { lat, lng },
+	});
+}
+
+export async function listDeliveryJobs(status?: string) {
+	const data = await api<{ jobs: Array<Record<string, unknown>> }>('/delivery/jobs', {
+		params: status ? { status } : undefined,
+	});
+	return data.jobs;
+}
+
+export async function acceptDeliveryJob(jobId: number) {
+	return api<{ job: Record<string, unknown> }>(`/delivery/jobs/${jobId}/accept`, {
+		method: 'POST',
+		body: {},
+	});
+}
+
+export async function pickupDeliveryJob(jobId: number) {
+	return api<{ job: Record<string, unknown>; order: Record<string, unknown> }>(
+		`/delivery/jobs/${jobId}/pickup`,
+		{ method: 'POST', body: {} }
+	);
+}
+
+export async function completeDeliveryJob(jobId: number, delivery_otp: string) {
+	return api<{ job: Record<string, unknown>; order: Record<string, unknown> }>(
+		`/delivery/jobs/${jobId}/complete`,
+		{ method: 'POST', body: { delivery_otp } }
+	);
+}
+
+export async function registerDevice(expo_push_token: string, platform?: string) {
+	return api<{ device: Record<string, unknown> }>('/devices/register', {
+		method: 'POST',
+		body: { expo_push_token, platform: platform || 'unknown' },
+	});
+}
+
+export async function unregisterDevice(expo_push_token: string) {
+	return api<{ ok: boolean }>('/devices/register', {
+		method: 'DELETE',
+		body: { expo_push_token },
+	});
+}
+
+export async function createPayment(input: {
+	order_id?: number;
+	booking_id?: number;
+	provider: 'cod' | 'razorpay';
+	idempotencyKey?: string;
+}) {
+	return api<{
+		payment: Record<string, unknown>;
+		razorpay?: {
+			key_id: string;
+			razorpay_order_id: string;
+			amount: number;
+			currency: string;
+		};
+	}>('/payment/create', {
+		method: 'POST',
+		body: {
+			order_id: input.order_id,
+			booking_id: input.booking_id,
+			provider: input.provider,
+		},
+		idempotencyKey: input.idempotencyKey,
+	});
+}
+
+export async function verifyPayment(input: {
+	order_id?: number;
+	booking_id?: number;
+	razorpay_order_id: string;
+	razorpay_payment_id: string;
+	razorpay_signature: string;
+}) {
+	return api<{ payment: Record<string, unknown>; verified: boolean }>('/payment/verify', {
+		method: 'POST',
+		body: input,
 	});
 }
 
