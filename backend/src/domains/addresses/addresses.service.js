@@ -164,3 +164,28 @@ export async function deleteAddress(userId, addressId) {
 		throw err;
 	}
 }
+
+export async function setDefaultAddress(userId, addressId) {
+	const existing = await getAddress(userId, addressId);
+	if (!existing) {
+		const err = new Error('Address not found');
+		err.status = 404;
+		throw err;
+	}
+	const client = await pool.connect();
+	try {
+		await client.query('BEGIN');
+		await client.query(`UPDATE addresses SET is_default = FALSE WHERE user_id = $1`, [userId]);
+		await client.query(
+			`UPDATE addresses SET is_default = TRUE WHERE id = $1 AND user_id = $2`,
+			[addressId, userId]
+		);
+		await client.query('COMMIT');
+		return getAddress(userId, addressId);
+	} catch (err) {
+		await client.query('ROLLBACK');
+		throw err;
+	} finally {
+		client.release();
+	}
+}

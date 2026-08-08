@@ -312,3 +312,183 @@ export async function transitionOrder(req, res) {
 }
 
 export { deliveryFeePaise };
+
+/** Plan aliases — same as transition with fixed to_status */
+export async function acceptOrder(req, res) {
+	req.body = { ...req.body, to_status: 'accepted' };
+	return transitionOrder(req, res);
+}
+
+export async function rejectOrder(req, res) {
+	req.body = { ...req.body, to_status: 'rejected', reason: req.body.reason || 'rejected' };
+	return transitionOrder(req, res);
+}
+
+export async function statusOrder(req, res) {
+	if (!req.body.to_status && req.body.status) {
+		req.body.to_status = req.body.status;
+	}
+	return transitionOrder(req, res);
+}
+
+export async function listOrderEvents(req, res) {
+	try {
+		const orderId = Number(req.params.id);
+		const order = await loadOrder(orderId);
+		if (!order) return res.status(404).json({ error: 'Order not found' });
+
+		const vendor = await pool.query(`SELECT id, user_id FROM vendors WHERE id = $1`, [
+			order.vendor_id,
+		]);
+		const isCustomer = order.customer_id === req.user.id;
+		const isVendor = vendor.rows[0]?.user_id === req.user.id;
+		const isStaff = ['super_admin', 'support', 'regional_admin', 'field_agent'].includes(
+			req.user.role
+		);
+		if (!isCustomer && !isVendor && !isStaff) {
+			return res.status(403).json({ error: 'Forbidden' });
+		}
+
+		return res.json({ order_id: orderId, events: order.events || [] });
+	} catch (err) {
+		console.error('listOrderEvents', err);
+		return res.status(500).json({ error: 'Failed to load events' });
+	}
+}
+
+/**
+ * GET /orders/delivery-quote?vendor_id=&lat=&lng=
+ * Returns fee + distance (Google Distance Matrix when key set).
+ */
+export async function deliveryQuote(req, res) {
+	try {
+		const vendorId = Number(req.query.vendor_id);
+		const lat = Number(req.query.lat);
+		const lng = Number(req.query.lng);
+		if (!Number.isInteger(vendorId) || vendorId < 1) {
+			return res.status(400).json({ error: 'vendor_id required' });
+		}
+		if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+			return res.status(400).json({ error: 'lat and lng required' });
+		}
+
+		const vendor = await pool.query(
+			`SELECT id, business_name, coverage_radius_m, is_approved, is_open,
+			        ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng
+			 FROM vendors WHERE id = $1`,
+			[vendorId]
+		);
+		if (vendor.rowCount === 0) return res.status(404).json({ error: 'Vendor not found' });
+		const v = vendor.rows[0];
+		if (!v.is_approved || !v.is_open) {
+			return res.status(400).json({ error: 'Vendor unavailable' });
+		}
+		if (v.lat == null || v.lng == null) {
+			return res.status(400).json({ error: 'Vendor has no location' });
+		}
+
+		const { distanceMeters } = await import('../geo/geocode.service.js');
+		const dist = await distanceMeters(Number(v.lat), Number(v.lng), lat, lng);
+		const inCoverage = dist.distance_m <= Number(v.coverage_radius_m || 3000);
+		const fee = deliveryFeePaise();
+
+		return res.json({
+			vendor_id: vendorId,
+			business_name: v.business_name,
+			serviceable: inCoverage,
+			coverage_radius_m: v.coverage_radius_m,
+			distance_m: dist.distance_m,
+			duration_s: dist.duration_s,
+			provider: dist.provider,
+			delivery_fee_paise: inCoverage ? fee : null,
+		});
+	} catch (err) {
+		console.error('deliveryQuote', err);
+		return res.status(500).json({ error: 'Failed to quote delivery' });
+	}
+}
+
+/**
+ * Live tracking / ETA for an order (partner location when available).
+ */
+export async function trackOrder(req, res) {
+	try {
+		const orderId = Number(req.params.id);
+		const order = await loadOrder(orderId);
+		if (!order) return res.status(404).json({ error: 'Order not found' });
+
+		const vendor = await pool.query(
+			`SELECT id, user_id, business_name,
+			        ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng
+			 FROM vendors WHERE id = $1`,
+			[order.vendor_id]
+		);
+		const isCustomer = order.customer_id === req.user.id;
+		const isVendor = vendor.rows[0]?.user_id === req.user.id;
+		const isStaff = ['super_admin', 'support', 'regional_admin', 'field_agent', 'delivery'].includes(
+			req.user.role
+		);
+		if (!isCustomer && !isVendor && !isStaff) {
+			return res.status(403).json({ error: 'Forbidden' });
+		}
+
+		const job = await pool.query(
+			`SELECT j.*, 
+			        ST_Y(dp.location::geometry) AS partner_lat,
+			        ST_X(dp.location::geometry) AS partner_lng,
+			        dp.id AS delivery_partner_id
+			 FROM delivery_jobs j
+			 LEFT JOIN delivery_partners dp ON dp.id = j.partner_id
+			 WHERE j.order_id = $1`,
+			[orderId]
+		);
+
+		const dropoff = order.delivery_address_snapshot || {};
+		const dropLat = Number(dropoff.lat);
+		const dropLng = Number(dropoff.lng);
+
+		let eta = null;
+		const partnerLat = job.rows[0]?.partner_lat != null ? Number(job.rows[0].partner_lat) : null;
+		const partnerLng = job.rows[0]?.partner_lng != null ? Number(job.rows[0].partner_lng) : null;
+		const fromLat = partnerLat ?? (vendor.rows[0]?.lat != null ? Number(vendor.rows[0].lat) : null);
+		const fromLng = partnerLng ?? (vendor.rows[0]?.lng != null ? Number(vendor.rows[0].lng) : null);
+
+		if (
+			Number.isFinite(fromLat) &&
+			Number.isFinite(fromLng) &&
+			Number.isFinite(dropLat) &&
+			Number.isFinite(dropLng)
+		) {
+			const { distanceMeters } = await import('../geo/geocode.service.js');
+			eta = await distanceMeters(fromLat, fromLng, dropLat, dropLng);
+		}
+
+		return res.json({
+			order_id: orderId,
+			status: order.status,
+			fulfillment_mode: order.fulfillment_mode,
+			vendor: {
+				id: vendor.rows[0]?.id,
+				business_name: vendor.rows[0]?.business_name,
+				lat: vendor.rows[0]?.lat != null ? Number(vendor.rows[0].lat) : null,
+				lng: vendor.rows[0]?.lng != null ? Number(vendor.rows[0].lng) : null,
+			},
+			dropoff: Number.isFinite(dropLat)
+				? { lat: dropLat, lng: dropLng }
+				: dropoff,
+			job: job.rows[0]
+				? {
+						id: job.rows[0].id,
+						status: job.rows[0].status,
+						partner_id: job.rows[0].partner_id,
+						partner_lat: partnerLat,
+						partner_lng: partnerLng,
+					}
+				: null,
+			eta,
+		});
+	} catch (err) {
+		console.error('trackOrder', err);
+		return res.status(500).json({ error: 'Failed to load tracking' });
+	}
+}

@@ -19,6 +19,7 @@ import deliveryRoutes from './domains/delivery/delivery.routes.js';
 import adminRoutes from './domains/admin/admin.routes.js';
 import devicesRoutes from './domains/devices/devices.routes.js';
 import settingsRoutes from './domains/settings/settings.routes.js';
+import paymentRoutes from './domains/payment/payment.routes.js';
 
 dotenv.config();
 
@@ -85,6 +86,7 @@ export function createApp() {
 	app.use('/api/delivery', deliveryRoutes);
 	app.use('/api/admin', adminRoutes);
 	app.use('/api/devices', devicesRoutes);
+	app.use('/api/payment', paymentRoutes);
 	app.use('/api', settingsRoutes);
 
 	app.use((err, req, res, _next) => {

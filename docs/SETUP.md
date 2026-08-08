@@ -197,6 +197,42 @@ curl -X POST http://localhost:3001/api/delivery/jobs/$JOB_ID/complete \
 
 Razorpay payment APIs are intentionally not included yet (COD only).
 
+### Google Maps / geocode
+
+Set `GOOGLE_MAPS_API_KEY` in `backend/.env` for Google Geocoding, Places Autocomplete, and Distance Matrix. Without it, geocode/places fall back to Nominatim.
+
+```bash
+# Place search (geocode)
+curl 'http://localhost:3001/api/addresses/geocode/search?q=Andheri%20East' \
+  -H "Authorization: Bearer $TOKEN"
+
+# Places Autocomplete (Maps SDK companion)
+curl 'http://localhost:3001/api/addresses/places/autocomplete?q=Bandra' \
+  -H "Authorization: Bearer $TOKEN"
+
+# Reverse geocode pin → address
+curl 'http://localhost:3001/api/addresses/geocode/reverse?lat=19.076&lon=72.8777' \
+  -H "Authorization: Bearer $TOKEN"
+
+# Delivery quote (distance + fee)
+curl 'http://localhost:3001/api/orders/delivery-quote?vendor_id=1&lat=19.076&lng=72.8777' \
+  -H "Authorization: Bearer $TOKEN"
+
+# Live tracking / ETA
+curl http://localhost:3001/api/orders/$ORDER_ID/tracking -H "Authorization: Bearer $TOKEN"
+
+# Payments (COD now; Razorpay when keys set)
+curl -X POST http://localhost:3001/api/payment/create \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"order_id":1,"provider":"cod"}'
+
+# Order aliases
+curl -X POST http://localhost:3001/api/orders/$ORDER_ID/accept -H "Authorization: Bearer $VENDOR_TOKEN"
+curl http://localhost:3001/api/orders/$ORDER_ID/events -H "Authorization: Bearer $TOKEN"
+```
+
+Full route coverage: `backend/tests/integration/api.coverage.test.js` (`npm test`).
+
 ---
 
 ## Step 3 — Expo app

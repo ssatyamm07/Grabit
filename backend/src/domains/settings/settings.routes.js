@@ -14,6 +14,18 @@ router.get('/app-settings', async (_req, res) => {
 	}
 });
 
+router.get('/info-pages', async (_req, res) => {
+	try {
+		const result = await pool.query(
+			`SELECT slug, title, updated_at FROM info_pages ORDER BY slug`
+		);
+		return res.json({ pages: result.rows });
+	} catch (err) {
+		console.error('settings.infoPages', err);
+		return res.status(500).json({ error: 'Failed to list pages' });
+	}
+});
+
 router.get('/info-pages/:slug', async (req, res) => {
 	try {
 		const result = await pool.query(`SELECT * FROM info_pages WHERE slug = $1`, [

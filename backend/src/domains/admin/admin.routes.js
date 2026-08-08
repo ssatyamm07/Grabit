@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticateToken, requireRole, requireCityScope } from '../../middleware/auth.js';
+import pool from '../../db.js';
 import * as ctrl from './admin.controller.js';
 
 const router = Router();
@@ -19,6 +20,47 @@ router.post('/users/:id/deactivate', ctrl.deactivateUser);
 
 router.post('/catalog/master', ctrl.createMasterProduct);
 router.patch('/catalog/master/:id', ctrl.updateMasterProduct);
+router.get('/catalog/categories', async (_req, res) => {
+	try {
+		const result = await pool.query(
+			`SELECT category, COUNT(*)::int AS product_count
+			 FROM master_products
+			 WHERE category IS NOT NULL AND category <> ''
+			 GROUP BY category ORDER BY category`
+		);
+		return res.json({ categories: result.rows });
+	} catch (err) {
+		return res.status(500).json({ error: 'Failed to list categories' });
+	}
+});
+router.get('/catalog/brands', async (_req, res) => {
+	try {
+		const result = await pool.query(
+			`SELECT brand, COUNT(*)::int AS product_count
+			 FROM master_products
+			 WHERE brand IS NOT NULL AND brand <> ''
+			 GROUP BY brand ORDER BY brand LIMIT 200`
+		);
+		return res.json({ brands: result.rows });
+	} catch (err) {
+		return res.status(500).json({ error: 'Failed to list brands' });
+	}
+});
+router.get('/catalog/master', async (req, res) => {
+	try {
+		const q = String(req.query.q || '').trim();
+		const result = await pool.query(
+			`SELECT id, name, brand, barcode, category, unit_label
+			 FROM master_products
+			 WHERE ($1 = '' OR name ILIKE '%' || $1 || '%' OR brand ILIKE '%' || $1 || '%')
+			 ORDER BY id DESC LIMIT 100`,
+			[q]
+		);
+		return res.json({ products: result.rows });
+	} catch (err) {
+		return res.status(500).json({ error: 'Failed to list products' });
+	}
+});
 
 router.get('/proposals', ctrl.listProposals);
 router.post('/proposals/:id/approve', ctrl.approveProposal);

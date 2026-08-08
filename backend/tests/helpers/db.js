@@ -11,6 +11,9 @@ export async function resetDb() {
 			checkout_previews,
 			order_group_orders,
 			order_groups,
+			refunds,
+			commission_settlements,
+			payments,
 			delivery_jobs,
 			delivery_partners,
 			vendor_product_proposals,
@@ -35,6 +38,14 @@ export async function resetDb() {
 			info_pages,
 			app_settings
 		RESTART IDENTITY CASCADE
+	`);
+	await pool.query(`
+		INSERT INTO info_pages (slug, title, body)
+		VALUES
+			('privacy', 'Privacy Policy', 'Privacy policy placeholder.'),
+			('terms', 'Terms of Service', 'Terms of service placeholder.'),
+			('support', 'Support', 'Contact Grabit support.')
+		ON CONFLICT (slug) DO NOTHING
 	`);
 }
 
