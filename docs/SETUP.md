@@ -233,6 +233,56 @@ curl http://localhost:3001/api/orders/$ORDER_ID/events -H "Authorization: Bearer
 
 Full route coverage: `backend/tests/integration/api.coverage.test.js` (`npm test`).
 
+### Disputes, field-agent verification, service bookings
+
+```bash
+# Open dispute on an order
+curl -X POST http://localhost:3001/api/disputes \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"order_id":1,"reason":"Missing item"}'
+
+# Admin resolve
+curl -X POST http://localhost:3001/api/disputes/1/resolve \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status":"resolved","resolution":"Partial refund"}'
+
+# Schedule field-agent store visit (seed agent phone 9000000066)
+curl -X POST http://localhost:3001/api/verification/schedule \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"vendor_id":1,"field_agent_id":AGENT_USER_ID}'
+
+# Agent completes verification
+curl -X PATCH http://localhost:3001/api/verification/1 \
+  -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status":"passed","checklist":{"storefront":true,"stock":true}}'
+
+# Master + vendor services + book
+curl -X POST http://localhost:3001/api/services/master \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"AC Service","category":"home"}'
+curl -X POST http://localhost:3001/api/services/me \
+  -H "Authorization: Bearer $VENDOR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"AC deep clean","price_paise":79900,"duration_minutes":90}'
+curl -X POST http://localhost:3001/api/services/bookings \
+  -H "Authorization: Bearer $TOKEN" -H 'Idempotency-Key: book-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"vendor_service_id":1,"scheduled_start":"2026-08-10T10:00:00+05:30"}'
+```
+
+### Outbox consumers (push + SMS)
+
+`npm run outbox:relay` now delivers Expo push + MSG91 SMS (dry-run unless keys set) and writes `notification_log`.
+
+```
+PUSH_DRY_RUN=true          # default without EXPO_ACCESS_TOKEN
+SMS_DRY_RUN=true           # default without MSG91_AUTH_KEY
+MSG91_AUTH_KEY=...
+MSG91_TEMPLATE_ID=...
+MSG91_SENDER_ID=GRABIT
+OUTBOX_MAX_ATTEMPTS=5
+OUTBOX_POLL_MS=2000 node scripts/outbox-relay.js --watch
+```
+
 ### Product images (MinIO local / S3 prod)
 
 Local MinIO is in Docker Compose (API **`:9010`**, console **`:9011`** — avoids clash with other MinIO on 9000).
@@ -322,7 +372,7 @@ npm start
 ## What’s next after setup
 
 1. Mobile UI for shopping lists + split checkout preview  
-2. Outbox relay worker hardening  
+2. MSG91 live SMS + Expo push production tokens  
 3. Delivery partner shell  
 
 See root [`plan.txt`](../plan.txt) §17 Build Order.

@@ -263,6 +263,38 @@ async function seed() {
 		[cityId]
 	);
 
+	await pool.query(
+		`INSERT INTO users (name, phone, role, phone_verified, city_id)
+		 VALUES ('Field Agent', '9000000066', 'field_agent', TRUE, $1)
+		 ON CONFLICT (phone) DO UPDATE
+		   SET role = 'field_agent', name = EXCLUDED.name, city_id = EXCLUDED.city_id`,
+		[cityId]
+	);
+
+	const masterSvc = await pool.query(
+		`INSERT INTO master_services (name, category, description, unit_label)
+		 SELECT 'AC Service', 'home', 'Split AC wet service', 'visit'
+		 WHERE NOT EXISTS (SELECT 1 FROM master_services WHERE name = 'AC Service')
+		 RETURNING id`
+	);
+	let masterServiceId = masterSvc.rows[0]?.id;
+	if (!masterServiceId) {
+		masterServiceId = (
+			await pool.query(`SELECT id FROM master_services WHERE name = 'AC Service' LIMIT 1`)
+		).rows[0]?.id;
+	}
+
+	if (masterServiceId) {
+		await pool.query(
+			`INSERT INTO vendor_services (
+				vendor_id, master_service_id, title, description, price_paise, duration_minutes
+			 ) VALUES ($1, $2, 'AC deep clean', 'Indoor + outdoor unit', 79900, 90)
+			 ON CONFLICT (vendor_id, title) DO UPDATE
+			   SET price_paise = EXCLUDED.price_paise, is_active = TRUE`,
+			[vendor1Id, masterServiceId]
+		);
+	}
+
 	console.log('Seed complete', {
 		cityId,
 		vendors: {
@@ -272,8 +304,9 @@ async function seed() {
 		customerPhone: '9111111111',
 		adminPhone: '9000000099',
 		deliveryPhone: '9000000088',
+		fieldAgentPhone: '9000000066',
 		lists: { groceryId, poojaId },
-		hint: 'Customer 9111111111 · Vendors 9000000001/02 · Admin 9000000099 · Delivery 9000000088',
+		hint: 'Customer 9111111111 · Vendors 9000000001/02 · Admin 9000000099 · Delivery 9000000088 · Field 9000000066',
 	});
 	await pool.end();
 }

@@ -4,8 +4,17 @@ import { migration001 } from './001_foundation.js';
 import { migration002 } from './002_shopping_lists.js';
 import { migration003 } from './003_ops_delivery.js';
 import { migration004 } from './004_payments_tracking.js';
+import { migration005 } from './005_disputes_services_outbox.js';
+import { migration006 } from './006_fix_photo_urls.js';
 
-const migrations = [migration001, migration002, migration003, migration004];
+const migrations = [
+	migration001,
+	migration002,
+	migration003,
+	migration004,
+	migration005,
+	migration006,
+];
 
 export async function runMigrations() {
 	await pool.query(`

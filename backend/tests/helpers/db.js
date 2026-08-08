@@ -8,6 +8,12 @@ export async function resetDb() {
 	await runMigrations();
 	await pool.query(`
 		TRUNCATE
+			notification_log,
+			disputes,
+			store_verifications,
+			service_bookings,
+			vendor_services,
+			master_services,
 			checkout_previews,
 			order_group_orders,
 			order_groups,
