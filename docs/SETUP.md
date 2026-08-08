@@ -233,6 +233,52 @@ curl http://localhost:3001/api/orders/$ORDER_ID/events -H "Authorization: Bearer
 
 Full route coverage: `backend/tests/integration/api.coverage.test.js` (`npm test`).
 
+### Product images (MinIO local / S3 prod)
+
+Local MinIO is in Docker Compose (API **`:9010`**, console **`:9011`** — avoids clash with other MinIO on 9000).
+
+```bash
+docker compose up -d minio
+# console: http://localhost:9011  (minioadmin / minioadmin)
+```
+
+`backend/.env`:
+
+```
+STORAGE_DRIVER=minio
+MINIO_ENDPOINT=127.0.0.1
+MINIO_PORT=9010
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_PUBLIC_URL=http://127.0.0.1:9010
+MINIO_BUCKET_PRODUCTS=products
+```
+
+Production AWS S3:
+
+```
+STORAGE_DRIVER=s3
+AWS_REGION=ap-south-1
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+S3_BUCKET=grabit-products
+S3_PUBLIC_URL=https://grabit-products.s3.ap-south-1.amazonaws.com
+```
+
+```bash
+# Upload (JSON base64) — or multipart field "images"
+curl -X POST http://localhost:3001/api/admin/catalog/master/$PRODUCT_ID/images \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"images":["data:image/jpeg;base64,/9j/..."]}'
+
+# Delete
+curl -X DELETE http://localhost:3001/api/admin/catalog/master/$PRODUCT_ID/images \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"http://127.0.0.1:9000/products/..."}'
+```
+
 ---
 
 ## Step 3 — Expo app

@@ -225,6 +225,104 @@ export async function updateMasterProduct(req, res) {
 	}
 }
 
+/**
+ * Upload product images (multipart files and/or JSON base64 array).
+ * multipart field: images (up to 8)
+ * OR body: { images: ["data:image/jpeg;base64,..."] }
+ */
+export async function uploadMasterProductImages(req, res) {
+	try {
+		const id = Number(req.params.id);
+		const product = await pool.query(`SELECT id, images FROM master_products WHERE id = $1`, [id]);
+		if (product.rowCount === 0) return res.status(404).json({ error: 'Product not found' });
+
+		const storage = (await import('../../services/storage.js')).default;
+		const uploaded = [];
+		const errors = [];
+
+		const files = Array.isArray(req.files) ? req.files : [];
+		for (const file of files) {
+			const result = await storage.uploadBuffer(file.buffer, {
+				originalName: file.originalname || 'image.jpg',
+				mimeType: file.mimetype,
+				prefix: `products/${id}`,
+			});
+			if (result.success) uploaded.push(result.url);
+			else errors.push(result.error);
+		}
+
+		const base64List = Array.isArray(req.body?.images)
+			? req.body.images
+			: req.body?.image
+				? [req.body.image]
+				: [];
+		for (let i = 0; i < base64List.length; i++) {
+			const item = base64List[i];
+			if (typeof item !== 'string') continue;
+			const result = await storage.uploadBase64(item, `product-${id}-${i}.jpg`, `products/${id}`);
+			if (result.success) uploaded.push(result.url);
+			else errors.push(result.error);
+		}
+
+		if (!uploaded.length) {
+			return res.status(400).json({
+				error: errors[0] || 'No images uploaded (send multipart field "images" or JSON base64)',
+				errors,
+			});
+		}
+
+		const existing = Array.isArray(product.rows[0].images) ? product.rows[0].images : [];
+		const images = [...existing, ...uploaded];
+		const updated = await pool.query(
+			`UPDATE master_products SET images = $1::jsonb WHERE id = $2 RETURNING *`,
+			[JSON.stringify(images), id]
+		);
+
+		return res.status(201).json({
+			product: updated.rows[0],
+			uploaded,
+			errors: errors.length ? errors : undefined,
+		});
+	} catch (err) {
+		console.error('admin.uploadMasterProductImages', err);
+		return res.status(500).json({ error: 'Failed to upload images' });
+	}
+}
+
+/** DELETE body: { url } or { urls: [] } */
+export async function deleteMasterProductImage(req, res) {
+	try {
+		const id = Number(req.params.id);
+		const urls = Array.isArray(req.body.urls)
+			? req.body.urls
+			: req.body.url
+				? [req.body.url]
+				: [];
+		if (!urls.length) return res.status(400).json({ error: 'url or urls required' });
+
+		const product = await pool.query(`SELECT id, images FROM master_products WHERE id = $1`, [id]);
+		if (product.rowCount === 0) return res.status(404).json({ error: 'Product not found' });
+
+		const storage = (await import('../../services/storage.js')).default;
+		const existing = Array.isArray(product.rows[0].images) ? product.rows[0].images : [];
+		const removeSet = new Set(urls.map(String));
+		const remaining = existing.filter((u) => !removeSet.has(String(u)));
+
+		for (const url of urls) {
+			await storage.deleteByUrl(String(url));
+		}
+
+		const updated = await pool.query(
+			`UPDATE master_products SET images = $1::jsonb WHERE id = $2 RETURNING *`,
+			[JSON.stringify(remaining), id]
+		);
+		return res.json({ product: updated.rows[0], removed: urls });
+	} catch (err) {
+		console.error('admin.deleteMasterProductImage', err);
+		return res.status(500).json({ error: 'Failed to delete image' });
+	}
+}
+
 export async function listProposals(req, res) {
 	try {
 		const cityId = cityFilter(req);

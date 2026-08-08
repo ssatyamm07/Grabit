@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticateToken, requireRole, requireCityScope } from '../../middleware/auth.js';
 import pool from '../../db.js';
+import { uploadImages } from '../../middleware/upload.js';
 import * as ctrl from './admin.controller.js';
 
 const router = Router();
@@ -20,6 +21,18 @@ router.post('/users/:id/deactivate', ctrl.deactivateUser);
 
 router.post('/catalog/master', ctrl.createMasterProduct);
 router.patch('/catalog/master/:id', ctrl.updateMasterProduct);
+router.post(
+	'/catalog/master/:id/images',
+	(req, res, next) => {
+		uploadImages.array('images', 8)(req, res, (err) => {
+			if (err) return res.status(400).json({ error: err.message });
+			next();
+		});
+	},
+	ctrl.uploadMasterProductImages
+);
+router.delete('/catalog/master/:id/images', ctrl.deleteMasterProductImage);
+
 router.get('/catalog/categories', async (_req, res) => {
 	try {
 		const result = await pool.query(
@@ -50,7 +63,7 @@ router.get('/catalog/master', async (req, res) => {
 	try {
 		const q = String(req.query.q || '').trim();
 		const result = await pool.query(
-			`SELECT id, name, brand, barcode, category, unit_label
+			`SELECT id, name, brand, barcode, category, unit_label, images
 			 FROM master_products
 			 WHERE ($1 = '' OR name ILIKE '%' || $1 || '%' OR brand ILIKE '%' || $1 || '%')
 			 ORDER BY id DESC LIMIT 100`,
