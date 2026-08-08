@@ -83,6 +83,9 @@ Demo accounts (after seed):
 | Vendor (Ravi Kirana) | `9000000001` |
 | Vendor (Lakshmi Dairy & Pooja) | `9000000002` |
 | Customer (sample lists) | `9111111111` |
+| Super admin | `9000000099` |
+| Regional admin | `9000000077` |
+| Delivery partner | `9000000088` |
 
 OTP flow:
 
@@ -145,7 +148,54 @@ cd backend
 npm run test:unit
 npm run test:integration   # needs Docker PostGIS up
 npm test
+npm run outbox:relay       # drain unpublished outbox events once
 ```
+
+### Addresses, auth refresh, vendor apply, delivery, admin
+
+```bash
+# Profile + refresh
+curl -X PATCH http://localhost:3001/api/auth/me \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Satyam"}'
+curl -X POST http://localhost:3001/api/auth/refresh \
+  -H 'Content-Type: application/json' -d '{"refreshToken":"..."}'
+
+# Addresses
+curl -X POST http://localhost:3001/api/addresses \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"label":"Home","lat":19.076,"lng":72.8777,"pincode":"400001","is_default":true}'
+
+# Vendor apply (pending until admin approves)
+curl -X POST http://localhost:3001/api/vendors/me/apply \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"business_name":"My Store","lat":19.076,"lng":72.8777}'
+
+# Admin approve
+curl -X POST http://localhost:3001/api/admin/vendors/$VENDOR_ID/approve \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Place order with fulfillment_mode=self|partner
+curl -X POST http://localhost:3001/api/orders \
+  -H "Authorization: Bearer $TOKEN" -H 'Idempotency-Key: o1' \
+  -H 'Content-Type: application/json' \
+  -d '{"vendor_id":1,"fulfillment_mode":"partner","items":[{"listing_id":1,"qty":1}]}'
+
+# Vendor marks ready → returns delivery_otp (dev)
+curl -X POST http://localhost:3001/api/orders/$ORDER_ID/transition \
+  -H "Authorization: Bearer $VENDOR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"to_status":"ready"}'
+
+# Delivery partner
+curl http://localhost:3001/api/delivery/jobs -H "Authorization: Bearer $DELIVERY_TOKEN"
+curl -X POST http://localhost:3001/api/delivery/jobs/$JOB_ID/accept -H "Authorization: Bearer $DELIVERY_TOKEN"
+curl -X POST http://localhost:3001/api/delivery/jobs/$JOB_ID/pickup -H "Authorization: Bearer $DELIVERY_TOKEN"
+curl -X POST http://localhost:3001/api/delivery/jobs/$JOB_ID/complete \
+  -H "Authorization: Bearer $DELIVERY_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"delivery_otp":"123456"}'
+```
+
+Razorpay payment APIs are intentionally not included yet (COD only).
 
 ---
 

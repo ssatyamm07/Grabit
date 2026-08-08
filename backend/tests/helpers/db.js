@@ -11,6 +11,9 @@ export async function resetDb() {
 			checkout_previews,
 			order_group_orders,
 			order_groups,
+			delivery_jobs,
+			delivery_partners,
+			vendor_product_proposals,
 			order_events,
 			order_items,
 			orders,
@@ -28,7 +31,9 @@ export async function resetDb() {
 			devices,
 			users,
 			master_products,
-			cities
+			cities,
+			info_pages,
+			app_settings
 		RESTART IDENTITY CASCADE
 	`);
 }

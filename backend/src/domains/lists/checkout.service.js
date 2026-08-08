@@ -176,7 +176,7 @@ export async function previewCheckout(listId, userId, body) {
 	}
 }
 
-export async function confirmCheckout(listId, userId, { preview_token, payment_method }, idempotencyKey) {
+export async function confirmCheckout(listId, userId, { preview_token, payment_method, fulfillment_mode } = {}, idempotencyKey) {
 	const { role } = await getMembership(listId, userId);
 	assertCanCheckout(role);
 
@@ -275,6 +275,7 @@ export async function confirmCheckout(listId, userId, { preview_token, payment_m
 				shoppingListId: listId,
 				actorUserId: userId,
 				deliveryFee: bucket.delivery_fee_paise,
+				fulfillmentMode: fulfillment_mode || null,
 			});
 
 			await client.query(

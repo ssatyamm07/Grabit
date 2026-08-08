@@ -14,6 +14,11 @@ import vendorsRoutes from './domains/vendors/vendors.routes.js';
 import ordersRoutes from './domains/orders/orders.routes.js';
 import ledgerRoutes from './domains/ledger/ledger.routes.js';
 import listsRoutes from './domains/lists/lists.routes.js';
+import addressesRoutes from './domains/addresses/addresses.routes.js';
+import deliveryRoutes from './domains/delivery/delivery.routes.js';
+import adminRoutes from './domains/admin/admin.routes.js';
+import devicesRoutes from './domains/devices/devices.routes.js';
+import settingsRoutes from './domains/settings/settings.routes.js';
 
 dotenv.config();
 
@@ -76,6 +81,11 @@ export function createApp() {
 	app.use('/api/orders', ordersRoutes);
 	app.use('/api/ledger', ledgerRoutes);
 	app.use('/api/lists', listsRoutes);
+	app.use('/api/addresses', addressesRoutes);
+	app.use('/api/delivery', deliveryRoutes);
+	app.use('/api/admin', adminRoutes);
+	app.use('/api/devices', devicesRoutes);
+	app.use('/api', settingsRoutes);
 
 	app.use((err, req, res, _next) => {
 		console.error(err);

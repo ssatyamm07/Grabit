@@ -2,8 +2,9 @@ import pool from '../db.js';
 import { logger } from '../config/logger.js';
 import { migration001 } from './001_foundation.js';
 import { migration002 } from './002_shopping_lists.js';
+import { migration003 } from './003_ops_delivery.js';
 
-const migrations = [migration001, migration002];
+const migrations = [migration001, migration002, migration003];
 
 export async function runMigrations() {
 	await pool.query(`

@@ -36,16 +36,18 @@ async function upsertVendor({ phone, name, businessName, vendorType, lng, lat, c
 	const vendor = await pool.query(
 		`INSERT INTO vendors (
 			user_id, business_name, vendor_type, fulfillment_type, catalog_kind,
-			city_id, pincode, location, coverage_radius_m, is_approved, is_open
+			city_id, pincode, location, coverage_radius_m, is_approved, is_open,
+			fulfillment_mode_default
 		 ) VALUES (
 			$1, $2, $3, 'prep_time', 'product',
 			$4, '400001',
 			ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-			5000, TRUE, TRUE
+			5000, TRUE, TRUE, 'either'
 		 )
 		 ON CONFLICT (user_id) DO UPDATE
 		   SET is_approved = TRUE, is_open = TRUE, business_name = EXCLUDED.business_name,
-		       location = EXCLUDED.location, vendor_type = EXCLUDED.vendor_type
+		       location = EXCLUDED.location, vendor_type = EXCLUDED.vendor_type,
+		       fulfillment_mode_default = COALESCE(vendors.fulfillment_mode_default, 'either')
 		 RETURNING id`,
 		[vendorUser.rows[0].id, businessName, vendorType, cityId, lng, lat]
 	);
@@ -230,6 +232,37 @@ async function seed() {
 		);
 	}
 
+	await pool.query(
+		`INSERT INTO users (name, phone, role, phone_verified, city_id)
+		 VALUES ('Demo Admin', '9000000099', 'super_admin', TRUE, $1)
+		 ON CONFLICT (phone) DO UPDATE
+		   SET role = 'super_admin', name = EXCLUDED.name, city_id = EXCLUDED.city_id`,
+		[cityId]
+	);
+
+	const deliveryUser = await pool.query(
+		`INSERT INTO users (name, phone, role, phone_verified, city_id)
+		 VALUES ('Demo Rider', '9000000088', 'delivery', TRUE, $1)
+		 ON CONFLICT (phone) DO UPDATE
+		   SET role = 'delivery', name = EXCLUDED.name, city_id = EXCLUDED.city_id
+		 RETURNING id`,
+		[cityId]
+	);
+	await pool.query(
+		`INSERT INTO delivery_partners (user_id, city_id, is_active)
+		 VALUES ($1, $2, TRUE)
+		 ON CONFLICT (user_id) DO UPDATE SET is_active = TRUE, city_id = EXCLUDED.city_id`,
+		[deliveryUser.rows[0].id, cityId]
+	);
+
+	await pool.query(
+		`INSERT INTO users (name, phone, role, phone_verified, city_id)
+		 VALUES ('Regional Admin', '9000000077', 'regional_admin', TRUE, $1)
+		 ON CONFLICT (phone) DO UPDATE
+		   SET role = 'regional_admin', name = EXCLUDED.name, city_id = EXCLUDED.city_id`,
+		[cityId]
+	);
+
 	console.log('Seed complete', {
 		cityId,
 		vendors: {
@@ -237,8 +270,10 @@ async function seed() {
 			lakshmi: { id: vendor2Id, phone: '9000000002' },
 		},
 		customerPhone: '9111111111',
+		adminPhone: '9000000099',
+		deliveryPhone: '9000000088',
 		lists: { groceryId, poojaId },
-		hint: 'Customer OTP: 9111111111 · Vendors: 9000000001 / 9000000002',
+		hint: 'Customer 9111111111 · Vendors 9000000001/02 · Admin 9000000099 · Delivery 9000000088',
 	});
 	await pool.end();
 }

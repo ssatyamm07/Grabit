@@ -1,13 +1,17 @@
 import pool from '../../db.js';
 import { enqueueOutbox } from '../../events/outbox.js';
 import { applyStockForOrderItems } from '../inventory/inventory.service.js';
-import { recordOrderPlacedLedger } from '../ledger/ledger.service.js';
 import { canTransition, stockActionFor } from './order.state.js';
 import { deliveryFeePaise, placeOrderForVendor, loadOrder } from './place-order.service.js';
+import {
+	deliveryOtpExpiresAt,
+	generateDeliveryOtp,
+	hashOtp,
+} from './fulfillment.js';
 
 /**
  * POST /orders
- * body: { vendor_id, items: [{ listing_id, qty }], payment_method?, delivery_address? }
+ * body: { vendor_id, items: [{ listing_id, qty }], payment_method?, delivery_address?, fulfillment_mode? }
  * header: Idempotency-Key
  */
 export async function placeOrder(req) {
@@ -15,6 +19,7 @@ export async function placeOrder(req) {
 	const items = Array.isArray(req.body.items) ? req.body.items : [];
 	const paymentMethod = req.body.payment_method || 'cod';
 	const deliveryAddress = req.body.delivery_address || null;
+	const fulfillmentMode = req.body.fulfillment_mode || null;
 
 	if (!Number.isInteger(vendorId) || vendorId < 1) {
 		return { status: 400, body: { error: 'vendor_id required' } };
@@ -35,6 +40,7 @@ export async function placeOrder(req) {
 			deliveryAddress,
 			idempotencyKey: req.idempotencyKey,
 			actorUserId: req.user.id,
+			fulfillmentMode,
 		});
 
 		await client.query('COMMIT');
@@ -55,7 +61,7 @@ export async function placeOrder(req) {
 		if (err.code === 'VENDOR_UNAVAILABLE') {
 			return { status: 404, body: { error: 'Vendor unavailable' } };
 		}
-		if (err.code === 'VALIDATION' || err.code === 'LISTING_NOT_FOUND') {
+		if (err.code === 'FULFILLMENT_MODE' || err.code === 'VALIDATION' || err.code === 'LISTING_NOT_FOUND') {
 			return { status: 400, body: { error: err.message } };
 		}
 		console.error('placeOrder', err);
@@ -127,13 +133,14 @@ export async function getOrder(req, res) {
 }
 
 /**
- * Transition order status (vendor/customer cancel/staff).
- * body: { to_status, reason? }
+ * Transition order status (vendor/customer cancel/staff/delivery).
+ * body: { to_status, reason?, delivery_otp? }
  */
 export async function transitionOrder(req, res) {
 	const orderId = Number(req.params.id);
 	const toStatus = String(req.body.to_status || '');
 	const reason = req.body.reason || null;
+	const deliveryOtp = req.body.delivery_otp != null ? String(req.body.delivery_otp) : null;
 
 	const client = await pool.connect();
 	try {
@@ -149,7 +156,11 @@ export async function transitionOrder(req, res) {
 		const vendor = await client.query(`SELECT * FROM vendors WHERE id = $1`, [order.vendor_id]);
 		const isCustomer = order.customer_id === req.user.id;
 		const isVendor = vendor.rows[0]?.user_id === req.user.id;
-		const isStaff = ['super_admin', 'support', 'regional_admin'].includes(req.user.role);
+		const isStaff = ['super_admin', 'support', 'regional_admin', 'field_agent'].includes(
+			req.user.role
+		);
+		const isDelivery = req.user.role === 'delivery';
+		const mode = order.fulfillment_mode || 'self';
 
 		if (!canTransition(order.status, toStatus)) {
 			await client.query('ROLLBACK');
@@ -159,8 +170,6 @@ export async function transitionOrder(req, res) {
 		}
 
 		const vendorActions = ['accepted', 'rejected', 'preparing', 'ready'];
-		const deliveryActions = ['picked', 'delivered'];
-
 		if (vendorActions.includes(toStatus) && !isVendor && !isStaff) {
 			await client.query('ROLLBACK');
 			return res.status(403).json({ error: 'Vendor only' });
@@ -169,9 +178,58 @@ export async function transitionOrder(req, res) {
 			await client.query('ROLLBACK');
 			return res.status(403).json({ error: 'Not allowed to cancel' });
 		}
-		if (deliveryActions.includes(toStatus) && !isVendor && !isStaff && req.user.role !== 'delivery') {
+
+		// Self-delivery: vendor/staff do picked + delivered (OTP required for delivered)
+		// Partner: picked via delivery job pickup; delivered via job complete — block direct partner delivery here unless staff force
+		if (toStatus === 'picked') {
+			if (mode === 'partner' && !isStaff) {
+				await client.query('ROLLBACK');
+				return res.status(400).json({
+					error: 'Partner delivery: use delivery job pickup',
+					code: 'USE_DELIVERY_JOB',
+				});
+			}
+			if (mode === 'self' && !isVendor && !isStaff) {
+				await client.query('ROLLBACK');
+				return res.status(403).json({ error: 'Vendor only for self-delivery pickup' });
+			}
+		}
+
+		if (toStatus === 'delivered') {
+			if (mode === 'partner' && !isStaff) {
+				await client.query('ROLLBACK');
+				return res.status(400).json({
+					error: 'Partner delivery: use delivery job complete',
+					code: 'USE_DELIVERY_JOB',
+				});
+			}
+			if (mode === 'self' && !isVendor && !isStaff) {
+				await client.query('ROLLBACK');
+				return res.status(403).json({ error: 'Vendor only for self-delivery complete' });
+			}
+			if (mode === 'self' && !isStaff) {
+				if (!deliveryOtp || !order.delivery_otp_hash) {
+					await client.query('ROLLBACK');
+					return res.status(400).json({ error: 'delivery_otp required' });
+				}
+				if (
+					!order.delivery_otp_expires_at ||
+					new Date(order.delivery_otp_expires_at) < new Date()
+				) {
+					await client.query('ROLLBACK');
+					return res.status(400).json({ error: 'Delivery OTP expired' });
+				}
+				if (order.delivery_otp_hash !== hashOtp(deliveryOtp)) {
+					await client.query('ROLLBACK');
+					return res.status(400).json({ error: 'Invalid delivery OTP' });
+				}
+			}
+		}
+
+		// Unused path for delivery role on transition — partner uses jobs API
+		if (isDelivery && !isStaff) {
 			await client.query('ROLLBACK');
-			return res.status(403).json({ error: 'Delivery/vendor only' });
+			return res.status(403).json({ error: 'Use delivery jobs API' });
 		}
 
 		const items = await client.query(`SELECT * FROM order_items WHERE order_id = $1`, [orderId]);
@@ -180,10 +238,39 @@ export async function transitionOrder(req, res) {
 			await applyStockForOrderItems(client, items.rows, stockAction);
 		}
 
-		await client.query(
+		let deliveryOtpPlain = null;
+		const updated = await client.query(
 			`UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
 			[toStatus, orderId]
 		);
+
+		// When ready: issue door OTP; create partner job if needed
+		if (toStatus === 'ready') {
+			deliveryOtpPlain = generateDeliveryOtp();
+			await client.query(
+				`UPDATE orders
+				 SET delivery_otp_hash = $1, delivery_otp_expires_at = $2, updated_at = NOW()
+				 WHERE id = $3`,
+				[hashOtp(deliveryOtpPlain), deliveryOtpExpiresAt(), orderId]
+			);
+
+			if (mode === 'partner') {
+				await client.query(
+					`INSERT INTO delivery_jobs (order_id, status)
+					 VALUES ($1, 'unassigned')
+					 ON CONFLICT (order_id) DO NOTHING`,
+					[orderId]
+				);
+			}
+		}
+
+		if (['cancelled', 'rejected', 'expired'].includes(toStatus)) {
+			await client.query(
+				`UPDATE delivery_jobs SET status = 'cancelled', updated_at = NOW()
+				 WHERE order_id = $1 AND status IN ('unassigned','assigned','picked_up')`,
+				[orderId]
+			);
+		}
 
 		await client.query(
 			`INSERT INTO order_events (order_id, from_status, to_status, actor_user_id, meta)
@@ -200,12 +287,18 @@ export async function transitionOrder(req, res) {
 				from: order.status,
 				to: toStatus,
 				actor_user_id: req.user.id,
+				fulfillment_mode: mode,
 			},
 		});
 
 		await client.query('COMMIT');
 		const full = await loadOrder(orderId);
-		return res.json({ order: full });
+		const body = { order: full };
+		// Dev-friendly: return OTP to vendor when marking ready (also SHOW_OTP)
+		if (deliveryOtpPlain && (isVendor || isStaff || process.env.SHOW_OTP_IN_RESPONSE === 'true')) {
+			body.delivery_otp = deliveryOtpPlain;
+		}
+		return res.json(body);
 	} catch (err) {
 		await client.query('ROLLBACK');
 		console.error('transitionOrder', err);

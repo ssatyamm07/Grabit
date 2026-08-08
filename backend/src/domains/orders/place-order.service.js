@@ -2,6 +2,7 @@ import { enqueueOutbox } from '../../events/outbox.js';
 import { applyStockForOrderItems } from '../inventory/inventory.service.js';
 import { recordOrderPlacedLedger } from '../ledger/ledger.service.js';
 import pool from '../../db.js';
+import { resolveFulfillmentMode } from './fulfillment.js';
 
 export function deliveryFeePaise() {
 	return Number(process.env.DEFAULT_DELIVERY_FEE_PAISE || 2000);
@@ -35,6 +36,7 @@ export async function placeOrderForVendor(client, {
 	shoppingListId = null,
 	actorUserId = null,
 	deliveryFee = null,
+	fulfillmentMode = null,
 }) {
 	if (!Number.isInteger(vendorId) || vendorId < 1) {
 		const err = new Error('vendor_id required');
@@ -111,14 +113,23 @@ export async function placeOrderForVendor(client, {
 
 	const fee = deliveryFee != null ? deliveryFee : deliveryFeePaise();
 	const total = subtotal + fee;
+	let mode;
+	try {
+		mode = resolveFulfillmentMode(
+			fulfillmentMode,
+			vendor.rows[0].fulfillment_mode_default || 'either'
+		);
+	} catch (err) {
+		throw err;
+	}
 
 	const orderIns = await client.query(
 		`INSERT INTO orders (
 			customer_id, vendor_id, status, fulfillment_type,
 			total_paise, delivery_fee_paise, payment_method,
 			delivery_address_snapshot, idempotency_key, placed_at,
-			order_group_id, shopping_list_id
-		 ) VALUES ($1,$2,'placed',$3,$4,$5,$6,$7::jsonb,$8,NOW(),$9,$10)
+			order_group_id, shopping_list_id, fulfillment_mode
+		 ) VALUES ($1,$2,'placed',$3,$4,$5,$6,$7::jsonb,$8,NOW(),$9,$10,$11)
 		 RETURNING *`,
 		[
 			customerId,
@@ -131,6 +142,7 @@ export async function placeOrderForVendor(client, {
 			idempotencyKey,
 			orderGroupId,
 			shoppingListId,
+			mode,
 		]
 	);
 
