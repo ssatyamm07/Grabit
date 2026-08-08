@@ -14,6 +14,7 @@
     "workers:expire": "node scripts/order-expire.js --watch",
     "order:expire": "node scripts/order-expire.js",
     "smoke:razorpay": "node scripts/razorpay-smoke.js",
+    "postman:generate": "node scripts/generate-postman.js",
     "backup": "bash scripts/backup-db.sh",
     "restore:drill": "bash scripts/restore-drill.sh",
     "pm2:start": "pm2 start ecosystem.config.cjs",

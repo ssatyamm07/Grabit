@@ -76,6 +76,17 @@ curl http://localhost:3001/api/health
 curl 'http://localhost:3001/api/catalog/master/search?q=Amul'
 ```
 
+### Postman (full API + flows + negatives)
+
+Import the collection before building Expo UX screens:
+
+1. Open [docs/postman/README.md](./postman/README.md)
+2. Import `docs/postman/Grabit.postman_collection.json` + `Grabit.local.postman_environment.json`
+3. Select env **Grabit Local**, run **00 Auth** verify-otp for seed phones (`SHOW_OTP_IN_RESPONSE=true`)
+4. Run **06 Flows E2E** (A self-delivery, B partner rider, …) and **07 Negatives**
+
+Regenerate after new routes: `cd backend && npm run postman:generate`
+
 Demo accounts (after seed):
 
 | Role | Phone |
